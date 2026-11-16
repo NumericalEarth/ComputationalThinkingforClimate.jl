@@ -64,7 +64,7 @@ TableOfContents(title = "📚 Table of Contents", indent = true, depth = 3, asid
 
 # ╔═╡ cbbb6280-4384-46d9-8e1f-1d7d3e5a26d1
 md"""
-In the previous lesson, we discussed aspects of how the radiative processes that drive Earth's weather and climate could be modeled, and how they affect Earth's temperature. However, the thermodynamics are only one half of the full picture. As the atmophere and ocean are fluids, they flow around the globe as well, distributing various tracers across the globe with their motions.
+In the previous lesson, we discussed aspects of how the radiative processes that drive Earth's weather and climate could be modeled, and how they affect Earth's temperature. However, the thermodynamics are only one half of the full picture. As the atmosphere and ocean are fluids, they flow around the globe as well, distributing various tracers across the globe with their motions.
 
 In this lesson, we will explore the fluid dynamical aspects of the Earth, and illustrate some of the considerations a computational fluid dynamicist thinks about when trying to model such processes. 
 """
@@ -138,9 +138,9 @@ end
 
 # ╔═╡ b0e06ea4-3962-44c3-b250-1067d559454b
 md"""
-The figures above shows the zonally-averaged absorbed sunlight (left) and the annual mean surface temperature respectively. They are obtained by doing a similar radiative balance calculation where absorbed sunlight equals to outgoing radiation as the previous lesson to obtain the equilibrium.
+The figures above show the zonally-averaged absorbed sunlight (left) and the annual mean surface temperature respectively. They are obtained by doing a similar radiative balance calculation where absorbed sunlight equals to outgoing radiation as the previous lesson to obtain the equilibrium.
 
-In the left panel, the black line shows the sunlight absorbed at different latitudes computed with pure thermodynamic considerations. The dotted line shows the globally averaged energy balance due to solar radiation. The red regions in the tropics indicate regions where there is energy surplus with respect to the global average, while the blue regions show the energy deficit in higher latitudes.
+In the left panel, the black line shows the sunlight absorbed at different latitudes computed with pure thermodynamic considerations. The dashed line shows the globally averaged energy balance due to solar radiation. The red regions in the tropics indicate regions where there is energy surplus with respect to the global average, while the blue regions show the energy deficit in higher latitudes.
 
 The black line in the right panel shows the _local radiative equilibrium_, which is the equilibrium temperature of the Earth if Earth's energy balance across latitudes is only driven by radiative balance. In this calculation we have assumed that albedo and atmospheric composition is the same everywhere on Earth. The results indicate that the Equator would sit near $(round(Int, maximum(sunlight.T))) °C and the poles near $(round(Int, minimum(sunlight.T))) °C.
 
@@ -277,7 +277,7 @@ In the material derivative, the first term ``\partial u/\partial t`` is the rate
 
 In the channel example above, the flow is steady, i.e., at any location ``x`` the velocity never changes, so ``\partial u/\partial t = 0`` everywhere. The parcel still speeds up as it moves into the narrow part of the channel, where the flow is faster. All of its acceleration comes from the advection term.
 
-The advection term is the product of ``u`` with the gradient of ``u``, which makes the equations nonlinear. Much of the difficulty of proving, understanding, and simulating the properties of the Navier--Stokes equations lie can be attributed to this innocent-looking term. It is also responsible for moving energy across a wide range of length scales, which is the source of fluid turbulence.
+The advection term is the product of ``u`` with the gradient of ``u``, which makes the equations nonlinear. Much of the difficulty of proving, understanding, and simulating the properties of the Navier--Stokes equations can be attributed to this innocent-looking term. It is also responsible for moving energy across a wide range of length scales, which is the source of fluid turbulence.
 
 Trying to capture the turbulent effects created by the advection term in various scenarios e.g. over an airfoil, around a building, in the ocean without explicitly resolving them when computing the Navier--Stokes equations is known as turbulence modeling. Turbulence modeling is a rich and ongoing topic of modern research, with broad applications in various fields such as aerospace engineering, earth system modeling, and astrophysics. Independent of whether the Navier--Stokes Millennium problem is solved, this _turbulence closure problem_ remains one of the most challenging frontiers in all of physics and engineering!
 """
@@ -387,7 +387,7 @@ In the flux form, the inviscid Burgers equation can be written as
 ```
 where we have used the chain rule ``u\,\partial u/\partial x = \partial(u^2/2)/\partial x`` to write the equation in terms of the flux ``F``.
 
-``F`` is rate at which ``u`` is carried past a point. If we integrate the equation from ``x = A`` to ``x = B``, we see that
+``F`` is the rate at which ``u`` is carried past a point. If we integrate the equation from ``x = A`` to ``x = B``, we see that
 ```math
 \frac{d}{dt}\int_A^B u\,dx = F(A) - F(B),
 ```
