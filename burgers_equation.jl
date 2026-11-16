@@ -18,7 +18,7 @@ end
 
 # ╔═╡ ae9a3c8c-e3d7-4f6a-af26-91efa98b9db6
 begin
-    using CairoMakie, PlutoUI, LinearAlgebra
+    using CairoMakie, PlutoUI, LinearAlgebra, NCDatasets
     using PlutoUI: Slider
 end
 
@@ -50,7 +50,7 @@ font-weight: 700;
 font-feature-settings: 'lnum', 'pnum';
 ">
 <p style="text-align: center; font-size: 2rem;">
-<em> Climate models: fluid motion on a grid </em>
+<em> Simulating the fluid dynamics of the Earth </em>
 </p>
 
 <style>
@@ -64,9 +64,9 @@ TableOfContents(title = "📚 Table of Contents", indent = true, depth = 3, asid
 
 # ╔═╡ cbbb6280-4384-46d9-8e1f-1d7d3e5a26d1
 md"""
-On Monday we built a model for one number, the average temperature of the Earth's surface. Today's subject is motion. The air and the ocean are fluids, their motion carries heat from the tropics to the poles, and a climate model predicts that motion by solving the equations of fluid dynamics on a grid.
+In the previous lesson, we discussed aspects of how the radiative processes that drive Earth's weather and climate could be modeled, and how they affect Earth's temperature. However, the thermodynamics are only one half of the full picture. As the atmophere and ocean are fluids, they flow around the globe as well, distributing various tracers across the globe with their motions.
 
-We first read those equations as Newton's second law, ``F = ma``, and pick out the term that makes them hard, **advection**. Then we build a solver for the simplest equation that has this term, the Burgers equation in one dimension. The obvious method fails, and each repair is a decision that every weather and climate model has to make. The next notebook, `ocean_planet.jl`, finds the same decisions in a global ocean model.
+In this lesson, we will explore the fluid dynamical aspects of the Earth, and illustrate some of the considerations a computational fluid dynamicist thinks about when trying to model such processes. 
 """
 
 # ╔═╡ 2ce0dfa9-f800-4eb0-b809-49826e7eef76
@@ -76,30 +76,27 @@ md"""
 
 # ╔═╡ 27e48d3d-859a-48bc-8324-00e73496a7ff
 html"""
-<div style="border: 2px dashed #999; border-radius: 8px; padding: 3em 1em; text-align: center; color: #777;">
-Opening video: a simulation of the Earth's atmosphere (to be embedded here)
-</div>
-<!-- Replace VIDEO_ID and delete the box above:
-<iframe style="width: 100%; aspect-ratio: 16 / 9;" src="https://www.youtube-nocookie.com/embed/VIDEO_ID" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
--->
+<iframe style="width: 100%; aspect-ratio: 16 / 9;" src="https://www.youtube-nocookie.com/embed/Ei8x3y-Ddq0?vq=hd2160" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 """
 
 # ╔═╡ 4621f04d-a10d-4a6e-9428-789a580cae3d
 md"""
-A program computed these clouds from the laws of physics, on a grid that covers the globe. While you watch, look for
+The video above shows a high-resolution simulation of Earth's atmosphere, ocean, and clouds, using 100% Julia! Below are some of the packages that are used in building and running the models:
 
-- the long, comma-shaped bands of cloud in the mid-latitudes, which are storms a thousand kilometres across that travel from west to east;
-- the tight spiral of a hurricane in the tropics;
-- the speckled fields of small clouds over the tropical oceans.
+- Atmosphere: [Breeze.jl](https://github.com/NumericalEarth/Breeze.jl)
+- Ocean: [Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl)
+- Atmosphere--Ocean coupling: [NumericalEarth.jl](https://github.com/NumericalEarth/NumericalEarth.jl)
+- Cloud Microphysics: [CloudMicrophysics.jl](https://github.com/CliMA/CloudMicrophysics.jl)
+- Radiative Transfer: [NumericalRadiation.jl](https://github.com/NumericalEarth/NumericalRadiation.jl)
 
-This class is about two questions: which equations does such a program solve, and how does a computer, which stores only a finite list of numbers, solve them?
+What's behind a simulation like this? Below we will explore some of the ingredients which are required to be able to achieve this.
 """
 
 # ╔═╡ a80dc238-4349-40e8-a4a0-9a5e76aaf61a
 md"""
-### Why the air and the ocean move
+## Energy balance of the Earth
 
-Monday's model used the sunlight averaged over the whole globe, but the Sun is high in the sky in the tropics and low near the poles. Averaged over a year, a square metre at the equator absorbs more than twice the sunlight of a square metre at a pole.
+In the previous lesson, we approximated the energy equilibrium of the Earth due to solar forcing with a _globally averaged_ temperature. Averaged over a year, however, the tropics absorb more sunlight than the extratropics, primarily because the Sun's rays hit the surface at a steeper angle in the tropics.
 """
 
 # ╔═╡ 80e5c2e7-6db2-4d80-bef1-c7632da09ed9
@@ -112,11 +109,17 @@ sunlight = let
     P₂(s) = (3s^2 - 1) / 2
     absorbed = @. (1 - α) * S₀ * (1 - 0.477 * P₂(sind(φ)))
     local_balance(S) = (S / ((1 - ε / 2) * σ))^(1 / 4) - 273.15
-    (; φ, absorbed, mean_absorbed = (1 - α) * S₀, T = local_balance.(absorbed), T_mean = local_balance((1 - α) * S₀))
+    (; φ, absorbed, mean_absorbed = (1 - α) * S₀, T = local_balance.(absorbed))
 end;
 
 # ╔═╡ 5c15ae8f-bcfb-4f5d-bf28-b376328b7f6e
-let (; φ, absorbed, mean_absorbed, T, T_mean) = sunlight
+let (; φ, absorbed, mean_absorbed, T) = sunlight
+    # observed surface temperature, 1961-1990 (Jones et al., 1999)
+    observed = NCDataset(download("https://crudata.uea.ac.uk/cru/data/temperature/absolute.nc")) do ds
+        monthly = ds["tem"][:, :, :]   # longitude × latitude × month [°C]
+        (; φ = ds["lat"][:], T = vec(sum(monthly, dims = (1, 3))) / (size(monthly, 1) * size(monthly, 3)))
+    end
+
     fig = Figure(size = (900, 360))
     ax1 = Axis(fig[1, 1], xlabel = "latitude (°)", ylabel = "W m⁻²", xticks = -90:30:90,
                title = "Sunlight absorbed, annual mean")
@@ -124,87 +127,103 @@ let (; φ, absorbed, mean_absorbed, T, T_mean) = sunlight
     band!(ax1, φ, min.(absorbed, mean_absorbed), fill(mean_absorbed, length(φ)), color = (:royalblue, 0.3))
     lines!(ax1, φ, absorbed, color = :black, linewidth = 2)
     hlines!(ax1, mean_absorbed, color = :gray40, linestyle = :dash)
-    text!(ax1, 0, mean_absorbed + 15, text = "more than average", align = (:center, :bottom), color = :firebrick)
-    text!(ax1, -88, mean_absorbed - 8, text = "less", align = (:left, :top), color = :royalblue)
-    text!(ax1, 88, mean_absorbed - 8, text = "less", align = (:right, :top), color = :royalblue)
-    text!(ax1, 0, mean_absorbed - 6, text = "global mean", align = (:center, :top), color = :gray40)
 
     ax2 = Axis(fig[1, 2], xlabel = "latitude (°)", ylabel = "°C", xticks = -90:30:90,
-               title = "Temperature if every latitude balanced its own budget")
-    lines!(ax2, φ, T, color = :black, linewidth = 2)
-    hlines!(ax2, T_mean, color = :gray40, linestyle = :dash)
-    text!(ax2, 0, T_mean - 1, text = "Monday's model", align = (:center, :top), color = :gray40)
+               title = "Surface temperature, annual mean")
+    lines!(ax2, φ, T, color = :black, linewidth = 2, label = "local radiative equilibrium")
+    lines!(ax2, observed.φ, observed.T, color = :firebrick, linewidth = 2, label = "observed, 1961–1990")
+    axislegend(ax2, position = :cb)
     fig
 end
 
 # ╔═╡ b0e06ea4-3962-44c3-b250-1067d559454b
 md"""
-The right panel applies Monday's balance, absorbed sunlight = outgoing radiation, to each latitude on its own, with the same albedo and the same atmosphere everywhere. The equator would sit near $(round(Int, maximum(sunlight.T))) °C and the poles near $(round(Int, minimum(sunlight.T))) °C.
+The figures above shows the zonally-averaged absorbed sunlight (left) and the annual mean surface temperature respectively. They are obtained by doing a similar radiative balance calculation where absorbed sunlight equals to outgoing radiation as the previous lesson to obtain the equilibrium.
 
-The real contrast is smaller, because the atmosphere and the ocean carry heat from the tropics towards the poles. In the mid-latitudes they carry more than 5 PW (1 PW = 10¹⁵ W), most of it in the atmosphere ([Trenberth & Caron, 2001](https://doi.org/10.1175/1520-0442(2001)014<3433:EOMAAO>2.0.CO;2)). All the power plants in the world produce about a thousand times less.
+In the left panel, the black line shows the sunlight absorbed at different latitudes computed with pure thermodynamic considerations. The dotted line shows the globally averaged energy balance due to solar radiation. The red regions in the tropics indicate regions where there is energy surplus with respect to the global average, while the blue regions show the energy deficit in higher latitudes.
 
-Sunlight creates a temperature difference and the fluid moves to remove it. That motion is the weather, and to predict it we need the law for how a fluid moves.
+The black line in the right panel shows the _local radiative equilibrium_, which is the equilibrium temperature of the Earth if Earth's energy balance across latitudes is only driven by radiative balance. In this calculation we have assumed that albedo and atmospheric composition is the same everywhere on Earth. The results indicate that the Equator would sit near $(round(Int, maximum(sunlight.T))) °C and the poles near $(round(Int, minimum(sunlight.T))) °C.
+
+However, we know that to not be the case! The observed contrast is shown in the red line ([Jones et al., 1999](https://doi.org/10.1029/1999RG900002)). From this, we see that the observations suggest a smaller temperature contrast across latitudes everywhere except over regions of Antarctica which is fully covered by thick ice sheets.
+
+How do we explain such a contrast? The other ingredient that determines the energy balance of the Earth system is the fluid dynamics of the atmosphere and ocean, which can be seen in the opening video. Atmospheric and oceanic fluid dynamics reduce the temperature contrast by carrying heat from the tropics toward the poles. In the mid-latitudes they carry more than 5 PW (1 PW = 10¹⁵ W), most of it in the atmosphere ([Trenberth & Caron, 2001](https://doi.org/10.1175/1520-0442(2001)014<3433:EOMAAO>2.0.CO;2)). All the power plants in the world produced about 32,000 TWh of electricity in 2025 ([Ember, 2026](https://ember-energy.org/latest-insights/global-electricity-review-2026/electricity-demand-and-supply-trends/)), an average of 3.6 TW, which is about 1400 times less.
+
+In many ways, the Earth system is analogous to a heat engine ([Lorenz, 1955](https://doi.org/10.3402/tellusa.v7i2.8796); [Barry et al., 2002](https://doi.org/10.1038/415774a)). Sunlight heats the tropics more than the poles, and the atmosphere converts part of this heat into the kinetic energy of the winds, creating the weather that we are familiar with. A hurricane is a heat engine of its own: it takes heat from the warm ocean surface and gives off heat at the cold top of the storm ([Emanuel, 1986](https://doi.org/10.1175/1520-0469(1986)043<0585:AASITF>2.0.CO;2); [Emanuel, 2006](https://doi.org/10.1063/1.2349743)). Similarly, the ocean is also a heat engine, albeit a much poorer one, because it is heated and cooled at the same surface level. In contrast, most of the energy that drives its currents comes from the winds and the tides ([Wunsch & Ferrari, 2004](https://doi.org/10.1146/annurev.fluid.36.050802.122121)).
+
+Now the question is: How does a fluid behave? What governs the behavior of all fluids, including the atmosphere and the ocean? Below we will begin to explore the rich world of fluid mechanics and how to simulate them!
 """
 
 # ╔═╡ cb9899d1-0837-42b3-88fd-6090fb831e6f
 md"""
-## Newton's second law for a fluid
+## Newton's laws for fluids: Navier--Stokes equations
 
-Take a small parcel of air or water. It obeys ``F = ma``, like any other object. Divide by the mass:
+Newton's laws apply themselves to all classical and nonrelativistic matter, including fluids.
+The now infamous (Euler--)Navier--Stokes(--Poisson) equations are no more than Newton's 2nd Law applied on fluids.
+
+Take a small parcel of fluid such as air or water. It obeys ``F = ma`` like any other object. Dividing both sides of the equation by its mass (or density) we obtain an expression for its acceleration. The acceleration of a parcel is caused by various forces that act on it. For a fluid parcel in a rotating frame such as ours, some of the forces it experiences are:
 
 $\begin{align}
-\text{\color{brown}{acceleration of a parcel}} = & + \text{\color{blue}{push from pressure differences}} \newline
-& + \text{\color{red}{buoyancy}} \newline
+\text{\color{brown}{acceleration of a parcel}} = & + \text{\color{blue}{pressure force}} \newline
+& + \text{\color{red}{buoyancy force}} \newline
 & + \text{\color{purple}{Coriolis force}} \newline
-& + \text{\color{gray}{friction}}
+& + \text{\color{gray}{viscosity (internal friction)}}
 \end{align}$
 
-In symbols, for the velocity ``\boldsymbol{u} = (u, v, w)`` of the fluid at each point in space and time:
+Newton's second law in this form holds only in an inertial frame, one that does not accelerate or rotate. We measure winds and currents on the rotating Earth, which is a non-inertial frame, so the equation needs additional *fictitious* forces such as the Coriolis and centrifugal forces. The centrifugal force only changes the effective gravity slightly, so for Earth-like planets it is generally negligible.
+
+Mathematically, a variant of the Navier--Stokes equations appropriate for describing incompressible geophysical fluids (such as the ocean) is known as the _rotating Boussinesq equations_. In a coordinate system that rotates with the Earth, at each point in space and time, such a fluid parcel can be described by its velocity vector field ``\boldsymbol{u} = (u, v, w)`` together with its buoyancy ``b``,
+```math
+b = -g\,\frac{\rho - \rho_0}{\rho_0},
+```
+which measures how much lighter the fluid is than a reference density ``\rho_0``. Fluid with ``b > 0`` is lighter than the reference and rises.
 
 ```math
-\underbrace{\frac{\partial \boldsymbol{u}}{\partial t} + (\boldsymbol{u}\cdot\nabla)\boldsymbol{u}}_{\text{acceleration}}
-= \underbrace{-\nabla p}_{\text{pressure}}
+\begin{align}
+\cssId{eq-momentum}{\underbrace{\frac{\partial \boldsymbol{u}}{\partial t} + (\boldsymbol{u}\cdot\nabla)\boldsymbol{u}}_{\text{acceleration}}}
+&= \underbrace{-\nabla p}_{\text{pressure}}
 + \underbrace{b\,\hat{\boldsymbol{z}}}_{\text{buoyancy}}
 \underbrace{-\,f\,\hat{\boldsymbol{z}}\times\boldsymbol{u}}_{\text{Coriolis}}
-+ \underbrace{\nu\nabla^2\boldsymbol{u}}_{\text{friction}},
-\qquad \nabla\cdot\boldsymbol{u} = 0.
++ \underbrace{\nu\nabla^2\boldsymbol{u}}_{\text{friction}}, \tag{1} \newline
+\cssId{eq-buoyancy}{\frac{\partial b}{\partial t} + (\boldsymbol{u}\cdot\nabla) b} &= \kappa\nabla^2 b, \tag{2} \newline
+\cssId{eq-incompressibility}{\underbrace{\nabla\cdot\boldsymbol{u}}_{\text{incompressibility}}} &= 0. \tag{3}
+\end{align}
 ```
 
-These are the **Navier–Stokes equations** for a fluid on a rotating planet.
+Here ``p`` is the pressure divided by ``\rho_0``, ``f`` is the Coriolis parameter, ``\nu`` is the viscosity and ``\kappa`` is the diffusivity of buoyancy.
 
-| Term | Name | What it does | In the video |
-|:-----|:-----|:-------------|:-------------|
-| ``\partial \boldsymbol{u}/\partial t + (\boldsymbol{u}\cdot\nabla)\boldsymbol{u}`` | acceleration | the "``a``" of ``F = ma`` | see the next section |
-| ``-\nabla p`` | pressure gradient | pushes fluid from high pressure to low pressure | the winds |
-| ``b\,\hat{\boldsymbol{z}}`` | buoyancy | light (warm) fluid rises, heavy (cold) fluid sinks | the speckled clouds: rising warm air |
-| ``-f\,\hat{\boldsymbol{z}}\times\boldsymbol{u}`` | Coriolis | turns moving fluid sideways, because the planet rotates | the spin of the storms |
-| ``\nu\nabla^2\boldsymbol{u}`` | friction | smooths out sharp differences in velocity | too small to see |
-| ``\nabla\cdot\boldsymbol{u} = 0`` | incompressibility | what flows into a region must flow out | |
 
-Here ``p`` is the pressure divided by the density, ``b`` is the buoyancy (proportional to how much lighter the fluid is than its surroundings), ``f`` is the Coriolis parameter and ``\nu`` is the viscosity.
+| Term | Name | What it does |
+|:-----|:-----|:-------------|
+| ``\partial \boldsymbol{u}/\partial t + (\boldsymbol{u}\cdot\nabla)\boldsymbol{u}`` | acceleration | the "``a``" of ``F = ma`` |
+| ``-\nabla p`` | pressure gradient | pushes fluid from high pressure to low pressure, which drives the winds |
+| ``b\,\hat{\boldsymbol{z}}`` | buoyancy | light (warm) fluid rises and heavy (cold) fluid sinks, as in the rising air under small clouds |
+| ``-f\,\hat{\boldsymbol{z}}\times\boldsymbol{u}`` | Coriolis | turns moving fluid to the right of its direction of motion in the Northern Hemisphere and to the left in the Southern Hemisphere, and makes storms spin |
+| ``\nu\nabla^2\boldsymbol{u}`` | friction | smooths out sharp differences in velocity, at scales of about a millimeter in air |
+| ``\kappa\nabla^2 b`` | diffusion | smooths out sharp differences in buoyancy |
 
-Each term on the right is a force with a name. The left side takes more explanation, because the acceleration has two terms.
+
+You might be wondering: why does acceleration look like ``\partial \boldsymbol{u}/\partial t + (\boldsymbol{u}\cdot\nabla)\boldsymbol{u}``? Why do we need ``(\boldsymbol{u}\cdot\nabla)\boldsymbol{u}``?
 """
 
 # ╔═╡ 4f5cf0d4-2ea8-4e62-841d-1b09111769be
 md"""
-### The acceleration of a moving parcel
+### Acceleration: the material derivative of a moving parcel
 
-The velocity field ``u(x, t)`` gives the velocity at a fixed place. Newton's law is about the velocity of a parcel, and the parcel moves, so we need the rate of change of ``u`` that the parcel sees as it travels. We work in one dimension.
+The _Eulerian_ velocity field ``\boldsymbol{u}(\boldsymbol{x}, t)`` described above gives the velocity at a fixed location ``\boldsymbol{x}``. 
 
-In a short time ``\Delta t``, a parcel at ``x`` with velocity ``u`` travels a distance ``\Delta x = u\,\Delta t``. Its velocity changes by
-
-```math
-\delta u = u(x + \Delta x,\ t + \Delta t) - u(x, t) \approx \frac{\partial u}{\partial t}\,\Delta t + \frac{\partial u}{\partial x}\,\Delta x .
-```
-
-Divide by ``\Delta t`` and use ``\Delta x = u\,\Delta t``:
+To see where the two terms of the acceleration come from, take one dimension and follow a parcel. Its velocity is the field at its own position, and its acceleration is the rate at which that velocity changes. In a short time ``\Delta t``, a parcel at ``x`` with velocity ``u`` travels a distance ``\Delta x = u\,\Delta t``, and its velocity changes by
 
 ```math
-\frac{Du}{Dt} = \frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x} .
+\Delta u = u(x + \Delta x,\ t + \Delta t) - u(x, t) \approx \frac{\partial u}{\partial t}\,\Delta t + \frac{\partial u}{\partial x}\,\Delta x .
 ```
 
-This is the acceleration of the parcel. ``D/Dt`` is called the **material derivative**: the rate of change following the material.
+Divide by ``\Delta t``, use ``\Delta x = u\,\Delta t``, and let ``\Delta t \to 0``:
+
+```math
+\frac{Du}{Dt} \equiv \lim_{\Delta t \to 0} \frac{\Delta u}{\Delta t} = \frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x}.
+```
+
+``D/Dt`` is called the **material derivative**, which describes the rate of change following the material as it travels. Below we illustrate why this is with a schematic.
 """
 
 # ╔═╡ 829221ca-5325-4e0b-9d65-bce670004840
@@ -238,14 +257,14 @@ let
     text!(ax1, x₂, -0.13, text = L"\text{time } t + \Delta t", align = (:center, :top), fontsize = 16)
     bracket!(ax1, x₁, -0.36, x₂, -0.36, text = L"\Delta x = u\,\Delta t", orientation = :down, fontsize = 17)
 
-    ax2 = Axis(fig[1, 2], title = "The same step in the x–t plane", limits = (0, 4, 0.4, 3.2),
+    ax2 = Axis(fig[1, 2], limits = (0, 4, 0.4, 3.2),
                xticks = ([1.6, 3.4], [L"x", L"x + \Delta x"]), yticks = ([1, 2.4], [L"t", L"t + \Delta t"]),
                xticklabelsize = 18, yticklabelsize = 18, xgridvisible = false, ygridvisible = false)
     lines!(ax2, [1.6, 1.6, 3.4], [1, 2.4, 2.4], color = :gray40, linestyle = :dash)
     arrows2d!(ax2, [1.6], [1], [1.8], [1.4], color = blue, shaftwidth = 3, tipwidth = 12, tiplength = 12)
     scatter!(ax2, [1.6, 3.4], [1, 2.4], markersize = 20, color = [:lightskyblue, blue], strokecolor = :black, strokewidth = 1.5)
-    text!(ax2, 1.5, 1.7, text = L"\text{wait: } \frac{\partial u}{\partial t}\,\Delta t", align = (:right, :center), fontsize = 18)
-    text!(ax2, 2.5, 2.5, text = L"\text{move: } \frac{\partial u}{\partial x}\,\Delta x", align = (:center, :bottom), fontsize = 18)
+    text!(ax2, 1.5, 1.7, text = L"\frac{\partial u}{\partial t}\,\Delta t", align = (:right, :center), fontsize = 18)
+    text!(ax2, 2.5, 2.5, text = L"\frac{\partial u}{\partial x}\,\Delta x", align = (:center, :bottom), fontsize = 18)
     text!(ax2, 2.65, 1.55, text = "path of the parcel", align = (:left, :top), color = blue, rotation = 0.68)
     colsize!(fig.layout, 1, Relative(0.62))
     fig
@@ -253,30 +272,40 @@ end
 
 # ╔═╡ 0d0ce3b4-b845-4f7f-bbb4-9a8ea9f296ed
 md"""
-The first term, ``\partial u/\partial t``, is the change at a fixed place while you wait. The second, ``u\,\partial u/\partial x``, is the change because the parcel moves to a place where the flow is different. It is called the **advection** term, and in three dimensions it becomes ``(\boldsymbol{u}\cdot\nabla)\boldsymbol{u}``.
 
-In the channel on the left the flow is steady: at any fixed place the velocity never changes, so ``\partial u/\partial t = 0`` everywhere. The parcel still accelerates, because it moves into the narrow part where the flow is faster, and all of its acceleration comes from the advection term.
+In the material derivative, the first term ``\partial u/\partial t`` is the rate at which the velocity changes at a fixed location. The second term ``u\,\partial u/\partial x`` is the rate at which the parcel's velocity changes as it moves to a place where the velocity is different. It is called the _advection_ term, and in three dimensions it becomes ``(\boldsymbol{u}\cdot\nabla)\boldsymbol{u}``.
 
-The advection term is the product of ``u`` with the gradient of ``u``. The unknown multiplies itself, which makes the equation **nonlinear**, and most of the difficulty of fluid dynamics comes from this term.
+In the channel example above, the flow is steady, i.e., at any location ``x`` the velocity never changes, so ``\partial u/\partial t = 0`` everywhere. The parcel still speeds up as it moves into the narrow part of the channel, where the flow is faster. All of its acceleration comes from the advection term.
+
+The advection term is the product of ``u`` with the gradient of ``u``, which makes the equations nonlinear. Much of the difficulty of proving, understanding, and simulating the properties of the Navier--Stokes equations lie can be attributed to this innocent-looking term. It is also responsible for moving energy across a wide range of length scales, which is the source of fluid turbulence.
+
+Trying to capture the turbulent effects created by the advection term in various scenarios e.g. over an airfoil, around a building, in the ocean without explicitly resolving them when computing the Navier--Stokes equations is known as turbulence modeling. Turbulence modeling is a rich and ongoing topic of modern research, with broad applications in various fields such as aerospace engineering, earth system modeling, and astrophysics. Independent of whether the Navier--Stokes Millennium problem is solved, this _turbulence closure problem_ remains one of the most challenging frontiers in all of physics and engineering!
 """
 
 # ╔═╡ 05401c11-43ad-4c09-8a1e-7ea95d128c09
 md"""
-### What advection does on its own
+### Shock formation
 
-To see what the advection term does, switch off every force:
+Let's now look at a scenario where there are no (external or internal) forces in the system. Therefore, we only have the material derivative
 
 ```math
-\frac{Du}{Dt} = 0 .
+\cssId{eq-material}{\frac{Du}{Dt} = 0 .} \tag{4}
 ```
 
-Each parcel keeps the velocity it starts with. The parcel that starts at ``x_0`` with velocity ``u_0(x_0)`` is later at
+Each parcel keeps the velocity it starts with. Write the initial velocity as ``u(x, 0) = u_0(x)``. The parcel that starts at ``x_0`` with velocity ``u_0(x_0)`` is later at
 
 ```math
 x(t) = x_0 + u_0(x_0)\,t .
 ```
 
-Start with a flow to the right that is faster in some places than in others. The domain is periodic: a parcel that leaves at ``x = 2\pi`` comes back in at ``x = 0``.
+Let's initialize the flow with an initial velocity ``u_0(x)`` of
+
+```math
+u_0(x) = 1 + \tfrac{1}{2}\sin x, \qquad 0 \le x < 2\pi .
+```
+Under this initialization, there are some locations where the flow is locally converging/diverging due to the velocity differences.
+
+We use a periodic domain where a parcel that leaves at ``x = 2\pi`` comes back in at ``x = 0``.
 """
 
 # ╔═╡ 84c481fd-6ad9-417b-877a-befc212cd4ae
@@ -290,7 +319,8 @@ md"""
 # ╔═╡ 43f051bb-1dbe-4f3d-b11f-94cde9e01815
 let t = time_parcels
     fig = Figure(size = (800, 620))
-    ax1 = Axis(fig[1, 1], ylabel = "time", title = "Paths of the parcels (colour: velocity)", limits = (0, 2π, 0, 3))
+    ax1 = Axis(fig[1, 1], ylabel = "time", title = "Paths of the parcels (color: velocity)", limits = (0, 2π, 0, 3),
+               xticks = 0:π/2:2π)
     for x₀ in range(0, 2π, length = 49)[1:end-1], shift in (0, -2π)
         lines!(ax1, [x₀, x₀ + 3u₀(x₀)] .+ shift, [0, 3], color = fill(u₀(x₀), 2), colormap = :viridis,
                colorrange = (0.5, 1.5), linewidth = 1)
@@ -324,60 +354,67 @@ end
 
 # ╔═╡ 7611f1fd-8680-423c-b52a-001b24d0601c
 md"""
-As you move the slider, the fast parcels (yellow) catch up with the slow parcels (purple) ahead of them, and the front of the wave gets steeper. At ``t = 2`` the front is vertical. After that the paths cross: the curve folds over, like a wave that breaks on a beach, and gives three velocities at one place.
+As you move the slider, the fast parcels (yellow) catch up with the slow parcels (purple) ahead of them, and the front of the wave gets steeper. At ``t = 2`` the front is vertical. For ``t > 2``, the solution ``u`` is not unique for all locations, giving multiple solutions at one place.
 
-A real fluid has one velocity at each place. The fast fluid piles into the slow fluid instead, and a sharp jump, called a **shock**, forms and stays. Breaking waves and traffic jams form in the same way.
-
-The initial condition was one smooth sine wave, and the advection term made a sharp feature out of it. In three dimensions the same term turns large, smooth motions into smaller and smaller eddies, which is turbulence.
+This is unphysical as a real fluid can only have one local velocity per location. Realistically, the fast fluid piles into the slow fluid instead, creating a sharp jump, called a **shock**. In compressible fluids, shocks (such as a sonic boom) can form and propagate. Many phenomena such as breaking waves and traffic jams can also be explained and described in the same way.
 """
 
 # ╔═╡ 076f663d-281c-4c97-9f1d-f63ce011337f
 md"""
-### The Burgers equation
+## Numerical methods for fluid dynamics
 
-Keep one dimension, keep the acceleration, and drop every force. What is left is the **inviscid Burgers equation**:
+Let's now begin to see how to build certain components of a fluid dynamical solver from scratch. There are 5 equations in [(1)](#eq-momentum), [(2)](#eq-buoyancy), and [(3)](#eq-incompressibility) which contain 5 variables ``(u, v, w, p, b)``, thus we are able to solve the system! However, the incompressibility equation [(3)](#eq-incompressibility) requires a separate treatment from Equations [(1)](#eq-momentum) and [(2)](#eq-buoyancy) since it does not explicitly depend on time. In many popular methods, this is treated by using a fractional step method ([Chorin, 1968](https://doi.org/10.1090/S0025-5718-1968-0242392-2); [Kim & Moin, 1985](https://doi.org/10.1016/0021-9991(85)90148-2)) where Equations [(1)](#eq-momentum) and [(2)](#eq-buoyancy) are time-stepped first before solving for the diagnostic constraint in [(3)](#eq-incompressibility). 
 
+For simplicity, we will not be looking at the treatment of Equation [(3)](#eq-incompressibility) today. We will also further simplify the Boussinesq equations by omitting the buoyancy equation, solving for a system with a homogeneous "fluid". We will also remove effects of viscosity so that the system is inviscid. We also reduce the system down to one dimension and consider an irrotational system with no Coriolis term. With these simplifications, the Navier--Stokes equations reduce to the **Burgers equation** which are a simplified form of the Navier--Stokes equations without the pressure term and the incompressibility criteria. Nonetheless, many important considerations for constructing a fluid solver can be demonstrated with the Burgers equation as well.
+"""
+
+# ╔═╡ 96cef172-fb67-4e7b-a35a-8c3cf693b099
+md"""
+### Inviscid Burgers equation
+
+You have already seen the Burgers equation [(4)](#eq-material) in the shock formation example. Expanding it in full, the inviscid Burgers' equation is 
 ```math
-\frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x} = 0 .
+\cssId{eq-burgers}{\frac{\partial u}{\partial t} + u\,\frac{\partial u}{\partial x} = 0 .} \tag{5}
 ```
 
-It is a toy equation. (It leaves out ``\nabla\cdot\boldsymbol{u} = 0``, which in one dimension would force ``u`` to be the same everywhere.) Its value is that it has the advection term of the Navier–Stokes equations and no other term, so we can learn how to compute advection with nothing else in the way.
+Now we will try to solve this equation using the _finite volume method_, which approximates the continuous equation with a discrete grid where the domain is divided into small cells and each cell stores the average of ``u`` over that cell, rather than its value at a single point. 
 
-By the chain rule, ``u\,\partial u/\partial x = \partial(u^2/2)/\partial x``, so the equation can also be written as
+In general, finite volume works with equations in the _flux form_, where the cell averages change only through the fluxes across cell faces, so whatever leaves one cell enters its neighbor.
 
+In the flux form, the inviscid Burgers equation can be written as 
 ```math
-\frac{\partial u}{\partial t} + \frac{\partial F}{\partial x} = 0, \qquad F = \frac{u^2}{2} .
+\cssId{eq-burgers-flux}{\frac{\partial u}{\partial t} + \frac{\partial F}{\partial x} = 0, \qquad F = \frac{u^2}{2},} \tag{6}
 ```
+where we have used the chain rule ``u\,\partial u/\partial x = \partial(u^2/2)/\partial x`` to write the equation in terms of the flux ``F``.
 
-This is called the **flux form**. ``F`` is the flux: the rate at which ``u`` is carried past a point. Integrate the equation from ``x = A`` to ``x = B``:
-
+``F`` is rate at which ``u`` is carried past a point. If we integrate the equation from ``x = A`` to ``x = B``, we see that
 ```math
-\frac{d}{dt}\int_A^B u\,dx = F(A) - F(B) .
+\frac{d}{dt}\int_A^B u\,dx = F(A) - F(B),
 ```
-
-The amount of ``u`` between ``A`` and ``B`` changes only by what flows in at one end and out at the other. Our solver will be built on this statement.
+where the amount of ``u`` between ``A`` and ``B`` changes only by what flows in at one end and out at the other.
 """
 
 # ╔═╡ 75ce0ac0-6a5c-4e8d-a1ea-84ef5598a2ef
 md"""
-## A solver from nothing
+### Linear advection
 
-We will learn on an easier problem and come back to Burgers at the end. Suppose the wind is a known constant, ``a``, and it carries something else along, such as smoke with concentration ``c(x, t)``:
+Let's start with an even simpler problem first and come back to Burgers later. Suppose the wind is blowing at constant speed ``a`` and it carries a passive tracer along, such as smoke with concentration ``c(x, t)``:
 
 ```math
-\frac{\partial c}{\partial t} + \frac{\partial F}{\partial x} = 0, \qquad F = a\,c .
+\cssId{eq-linear-advection}{\frac{\partial c}{\partial t} + \frac{\partial F}{\partial x} = 0, \qquad F = a\,c .} \tag{7}
 ```
 
-This is the **linear advection equation**. Its exact solution is known: the initial shape moves at speed ``a`` without change, ``c(x, t) = c_0(x - a t)``. Any difference between this and the output of our solver is an error of the solver.
+This is the _linear advection equation_. This is a useful system to study because its exact solution is known: the initial shape moves at speed ``a`` without change, ``c(x, t) = c_0(x - a t)`` (you can check this by substituting it into Equation [(7)](#eq-linear-advection)). We can use this analytical solution to compare with our numerical results.
 """
 
 # ╔═╡ b499be47-5368-4c3b-9e19-3c9a8d786ac0
 md"""
-### The grid
+### Spatial discretization on a grid
 
-A computer stores a list of numbers, so the function ``c(x)`` has to become one. Cut the domain into ``N`` boxes, called **cells**, of width ``\Delta x``, and store one number for each cell: ``c_j``, the average of ``c`` in cell ``j``.
+To solve continuous equations numerically, we have to discretize the system. Various discretization strategies form the basis of various methods, such as finite difference, finite element, finite volume, spectral element, boundary element.
+In finite volume, we cut the domain into ``N`` boxes, called **cells**, of width ``\Delta x``, and store one number for each cell: ``c_j``, the average of ``c`` in cell ``j``.
 
-**Number of cells:** $(@bind cell_count Slider(5:5:80, default = 10, show_value = true))
+**Number of cells:** $(@bind cell_count Slider(5:5:100, default = 10, show_value = true))
 """
 
 # ╔═╡ f34fe12c-88e9-416a-9b7f-89c27f705696
@@ -392,7 +429,7 @@ let N = cell_count
     ax = Axis(fig[1, 1], xlabel = "x", limits = (0, 1, 0, 1.15), title = "A function and its cell averages")
     barplot!(ax, centers, averages, gap = 0, color = (blue, 0.25), strokecolor = (blue, 0.8), strokewidth = 1)
     lines!(ax, 0:0.002:1, smooth, color = :gray30, linewidth = 2)
-    if N ≤ 15
+    if N ≤ 25
         j = N ÷ 2
         scatter!(ax, centers[j-1:j+1], averages[j-1:j+1], color = blue, markersize = 10)
         for (k, label) in zip(j-1:j+1, (L"c_{j-1}", L"c_j", L"c_{j+1}"))
@@ -400,10 +437,10 @@ let N = cell_count
         end
         faces = [centers[j] - Δx / 2, centers[j] + Δx / 2]
         vlines!(ax, faces, color = :black, linewidth = 2)
-        arrows2d!(ax, faces .- 0.3Δx, [0.3, 0.3], [0.6Δx, 0.6Δx], [0, 0], color = orange,
+        arrows2d!(ax, faces .- 0.3Δx, [0.3, 0.3], [0.6Δx, 0.6Δx], [0, 0], color = :red,
                   shaftwidth = 4, tipwidth = 13, tiplength = 12)
-        text!(ax, faces[1] - 0.35Δx, 0.3, text = L"F_{j-1/2}", align = (:right, :center), color = orange, fontsize = 18)
-        text!(ax, faces[2] + 0.35Δx, 0.3, text = L"F_{j+1/2}", align = (:left, :center), color = orange, fontsize = 18)
+        text!(ax, faces[1] - 0.35Δx, 0.3, text = L"F_{j-1/2}", align = (:right, :center), color = :red, fontsize = 18)
+        text!(ax, faces[2] + 0.35Δx, 0.3, text = L"F_{j+1/2}", align = (:left, :center), color = :red, fontsize = 18)
         bracket!(ax, faces[1], 0.18, faces[2], 0.18, text = L"\Delta x", orientation = :down, fontsize = 16)
     end
     fig
@@ -417,30 +454,28 @@ To find how ``c_j`` changes in time, apply the flux form to cell ``j``. The amou
 \Delta x\,\frac{d c_j}{dt} = F_{j-1/2} - F_{j+1/2} .
 ```
 
-``F_{j-1/2}`` is the flux through the left face and ``F_{j+1/2}`` the flux through the right face. A bank balance changes in the same way, by deposits minus withdrawals.
+``F_{j-1/2}`` is the flux through the left face and ``F_{j+1/2}`` the flux through the right face.
 
-No approximation has been made so far, and the equation has a useful property. The flux that leaves cell ``j`` through its right face enters cell ``j+1`` through its left face, so when you add up all the cells every flux cancels and the total amount ``\sum_j c_j\,\Delta x`` never changes. A method built this way is called a **finite-volume** method, and it **conserves** ``c`` by construction.
+No approximation has been made so far, and the equation has a useful property. The flux that leaves cell ``j`` through its right face enters cell ``j+1`` through its left face, so when you add up all the cells every flux cancels and the total amount ``\sum_j c_j\,\Delta x`` is conserved exactly. This is why the finite volume method is able to conserve ``c`` by construction. This is a useful property for many fluid applications where we do not want tracers in the fluid to leak out of the system, especially when ocean models are usually run for thousands of simulation years!
 
-The approximation enters with the fluxes. We store averages in cells, but the flux needs the value of ``c`` at a face, and there are many ways to estimate it. The rest of this section is about that choice.
+The mathematical approximation we are making here enters via the fluxes. We store averages in cells, but the flux needs the value of ``c`` at a face. How do we estimate that?
 """
 
 # ╔═╡ 566e0aca-d2b0-4071-aaa1-061cd858c3bc
 md"""
-### First try: the centered flux
+### Centered flux
 
-The obvious estimate for the value at a face is the average of the two cells next to it:
+An obvious estimate for the value at a face is the average of the two cells next to it:
 
 ```math
 c_{j+1/2} = \frac{c_j + c_{j+1}}{2}, \qquad F_{j+1/2} = a\,\frac{c_j + c_{j+1}}{2} .
 ```
-
-In the code, an equation is a type, and `flux` returns its flux.
 """
 
 # ╔═╡ 3494a6b6-d761-4b1b-a398-891bbec22c5a
 begin
-    struct LinearAdvection
-        a :: Float64   # wind speed
+    struct LinearAdvection{FT}
+        a :: FT   # wind speed
     end
 
     flux(eq::LinearAdvection, c) = eq.a * c
@@ -461,80 +496,67 @@ A way to compute the flux at a face is also a type. `face_flux(eq, c, j, scheme)
 
 # ╔═╡ 5430b003-fe8c-4e43-bce8-a9423705ef70
 md"""
-The **tendency** is the rate of change of every cell: flux in minus flux out, divided by ``\Delta x``.
+The **tendency** is the rate of change of every cell, which is just the right hand side of the equation. `tendency!` writes it into an array `dc` that we allocate once and reuse at every step. By Julia convention, a `!` at the end of a function name means that the function modifies one of its arguments.
 """
 
 # ╔═╡ 511f6251-8445-4484-9d89-e94d102c8940
 md"""
-### Stepping forward in time
+Dividing the flux balance for cell ``j`` by ``\Delta x`` gives
 
-We now have ``N`` ordinary differential equations, one for each cell:
+```math
+\frac{dc_j}{dt} = -\,\frac{F_{j+1/2} - F_{j-1/2}}{\Delta x} .
+```
 
+With the centered flux ``F_{j+1/2} = a\,(c_j + c_{j+1})/2``, we get
+```math
+\frac{dc_j}{dt} = -\,a\,\frac{c_{j+1} - c_{j-1}}{2\,\Delta x}, \qquad j = 1, \dots, N,
+```
+with ``c_0 = c_N`` and ``c_{N+1} = c_1`` since the domain is periodic. We note from this system of equations that the only derivative left is in time. The right-hand side is just arithmetic on the numbers ``c_1, \dots, c_N``. Therefore, this is a set of ``N`` coupled ordinary differential equations, where each ``c_j`` equation is coupled to the ``c_{j+1}`` and ``c_{j-1}`` equations.
+
+Using the finite volume method, we have now turned a partial differential equation into a system of ordinary differential equations. This is usually helpful because we can now use an ODE solver to discretize the time dimension and complete the procedure.
+"""
+
+# ╔═╡ 86bd1203-b030-4f70-b9f4-601af8e96e42
+md"""
+### Solving ODEs
+
+For notation simplicity in ODE analysis, let's ignore the spatial indices for a brief moment, and write the ODE(s) as
 ```math
 \frac{dc}{dt} = G(c),
 ```
+where ``c`` is the list of cell averages and ``G`` is the tendency.
 
-where ``c`` is the list of cell averages and ``G`` is the tendency. Monday's model was one ODE, ``T' = f(T)``. This is the same problem with ``N`` unknowns.
-
-The simplest way to solve an ODE is **forward Euler**: compute the tendency now, and follow it for a short time ``\Delta t``.
+The simplest way to solve an ODE is **forward Euler**. We use the superscript ``n`` to index time, so ``c^n`` is the list of cell averages at time ``t^n = n\,\Delta t``. Then we approximate the time derivative by the change over one step:
 
 ```math
-c^{n+1} = c^{n} + \Delta t\,G(c^{n})
+\frac{dc}{dt} \approx \frac{c^{n+1} - c^{n}}{\Delta t} .
 ```
 
-The superscript ``n`` counts time steps.
+Setting this equal to the tendency evaluated at the current time, ``G(c^n)``, and solving for ``c^{n+1}`` gives
+
+```math
+c^{n+1} = c^{n} + \Delta t\,G(c^{n}) .
+```
+Using this equation, for a given ``c^n``, we would be able to obtain ``c^{n+1}`` by substituting the right hand side. Doing this iteratively allows us to step the equations forward in time given initial condition ``c^0``. Thus, we can now solve the equation numerically!
 """
 
 # ╔═╡ 1889409d-d5d5-45cb-8386-1a525acd3e90
 begin
     struct ForwardEuler end
 
-    advance(c, Δt, G, ::ForwardEuler) = c + Δt * G(c)
+    allocate_workspace(::ForwardEuler, c) = (; dc = similar(c))
+
+    function advance!(c, Δt, G!, ::ForwardEuler, workspace)
+        (; dc) = workspace
+        G!(dc, c)
+        @. c += Δt * dc
+        return c
+    end
 end
 
 # ╔═╡ 425e9917-fa9e-45df-a046-69dc8d64bb05
 md"""
-`simulate` takes time steps until `stop_time` and keeps every state. If the numbers stop being finite, it stops early.
-"""
-
-# ╔═╡ 6d340d8f-8160-42e7-b411-527a4f5e1a34
-md"""
-Before we use forward Euler on our equation, try it on two equations whose answers you know from 18.03.
-
-| | equation | exact solution | one Euler step multiplies ``y`` by |
-|:--|:--|:--|:--|
-| decay | ``y' = -y`` | ``e^{-t}`` | ``1 - \Delta t`` |
-| oscillation | ``y' = i\,y`` | ``e^{it}``, which moves round the unit circle in the complex plane for ever | ``1 + i\,\Delta t`` |
-
-**Time step Δt:** $(@bind test_time_step Slider(0.1:0.1:2.5, default = 0.5, show_value = true))
-"""
-
-# ╔═╡ 821af8d1-3528-482f-9bfb-5ae1b4d30e88
-let Δt = test_time_step
-    blue = Makie.wong_colors()[1]
-    fig = Figure(size = (900, 400))
-    ax1 = Axis(fig[1, 1], xlabel = "t", ylabel = "y", title = "Decay: each step multiplies y by $(round(1 - Δt, digits = 1))",
-               limits = (0, 10, -2, 2))
-    lines!(ax1, 0:0.05:10, t -> exp(-t), color = :black, label = "exact")
-    n = 0:floor(Int, 10 / Δt)
-    scatterlines!(ax1, n .* Δt, (1 - Δt) .^ n, color = blue, label = "forward Euler")
-    axislegend(ax1, position = :rt)
-
-    growth = round(abs(1 + im * Δt), digits = 3)
-    ax2 = Axis(fig[1, 2], xlabel = "Re y", ylabel = "Im y", aspect = DataAspect(), limits = (-3, 3, -3, 3),
-               title = "Oscillation: each step multiplies |y| by $growth")
-    lines!(ax2, cos.(0:0.01:2π), sin.(0:0.01:2π), color = :black)
-    n = 0:ceil(Int, 2π / Δt)
-    y = (1 + im * Δt) .^ n
-    scatterlines!(ax2, real.(y), imag.(y), color = blue)
-    fig
-end
-
-# ╔═╡ ff955f59-1d7a-40e4-8911-fec259969c2d
-md"""
-For decay, forward Euler works if the step is small enough. With ``\Delta t < 1`` the answer decays smoothly, between 1 and 2 it flips sign at every step but still decays, and above 2 it grows without bound.
-
-For oscillation, forward Euler fails at every step size. Each step leaves the circle along the tangent, so the distance from the origin grows by the factor ``\sqrt{1 + \Delta t^2}``, and a smaller step only slows the spiral down.
+`simulate` allocates the storage for every state once, before the loop, then takes time steps until `stop_time` and writes each new state into place.
 """
 
 # ╔═╡ 0c9e15a0-cdc8-43ef-a2d5-10f720707ce4
@@ -589,8 +611,8 @@ begin
     function draw_profiles!(ax, x, curves; exact = nothing)
         isnothing(exact) || lines!(ax, exact..., color = :black, linewidth = 1, label = "exact")
         for curve in curves
-            stairs!(ax, x, curve.values; step = :center, color = curve.color, label = curve.label,
-                    linestyle = get(curve, :linestyle, :solid), linewidth = 1.5)
+            lines!(ax, x, curve.values; color = curve.color, label = curve.label,
+                   linestyle = get(curve, :linestyle, :solid), linewidth = 1.5)
         end
         return ax
     end
@@ -600,7 +622,7 @@ end;
 
 # ╔═╡ 3ae7b80b-b2ac-481b-9d3d-aeda8f6cc9e6
 md"""
-The run fails. Wiggles a few cells wide appear near the sharp edges of the top hat and grow. On the logarithmic axis the growth is a straight line, so it is exponential, and at ``C = 0.5`` the largest value is above ``10^8`` after one trip round the domain.
+The run fails. Wiggles a few cells wide appear near the sharp edges of the top hat and grow. On the logarithmic axis the growth is a straight line, so it is exponential, and at ``C = 0.5`` the largest value is above ``10^8`` after one trip around the domain.
 
 A smaller time step slows the growth but leaves it in place. At ``C = 0.1`` the wiggles grow more slowly. At ``C = 0.01`` the solution survives one trip, full of wiggles that are still growing.
 
@@ -623,28 +645,39 @@ Our method has two parts, the flux in space and the stepper in time, and either 
 begin
     struct RK3 end
 
-    function advance(c, Δt, G, ::RK3)
-        c¹ = c + Δt * G(c)
-        c² = 3/4 * c + 1/4 * (c¹ + Δt * G(c¹))
-        return 1/3 * c + 2/3 * (c² + Δt * G(c²))
+    allocate_workspace(::RK3, c) = (; dc = similar(c), c¹ = similar(c), c² = similar(c))
+
+    function advance!(c, Δt, G!, ::RK3, workspace)
+        (; dc, c¹, c²) = workspace
+        G!(dc, c)
+        @. c¹ = c + Δt * dc
+        G!(dc, c¹)
+        @. c² = 3//4 * c + 1//4 * (c¹ + Δt * dc)
+        G!(dc, c²)
+        @. c = 1//3 * c + 2//3 * (c² + Δt * dc)
+        return c
     end
 end
 
 # ╔═╡ 149f84fd-935e-4089-9c49-0a663368d586
-function simulate(c₀, G, stepper; Δt, stop_time)
-    times, states = [0.0], [c₀]
-    for n in 1:round(Int, stop_time / Δt)
-        c = advance(states[end], Δt, G, stepper)
-        all(isfinite, c) || break
-        push!(times, n * Δt)
-        push!(states, c)
+function simulate(c₀, G!, stepper; Δt, stop_time)
+    nsteps = round(Int, stop_time / Δt)
+    Δt = convert(eltype(c₀), Δt)
+    times  = [n * Δt for n in 0:nsteps]
+    states = [similar(c₀) for n in 0:nsteps]
+    c = copy(c₀)
+    workspace = allocate_workspace(stepper, c)
+    states[1] .= c
+    for n in 1:nsteps
+        advance!(c, Δt, G!, stepper, workspace)
+        states[n + 1] .= c
     end
     return (; times, states)
 end
 
 # ╔═╡ 16adfbd5-1653-496d-b6fc-ca10d8417b48
 md"""
-`simulate`, `tendency` and `face_flux` are unchanged. Julia picks the right `advance` from the type of the last argument, which is multiple dispatch at work.
+`simulate`, `tendency!` and `face_flux` are unchanged. Julia picks the right `advance!` from the type of the `stepper` argument, which is multiple dispatch at work.
 """
 
 # ╔═╡ 0d11739c-14a6-4435-980e-22f93a422833
@@ -654,7 +687,7 @@ md"""
 
 # ╔═╡ d4349e75-f356-4696-87c4-67465e6eb687
 md"""
-The blow-up is gone, and the run stays stable for as long as you like. The solution is still wrong. It overshoots above 1 and undershoots below 0, and ripples that start at the sharp edges of the top hat spread over the whole domain, the smooth bump included. If ``c`` is the concentration of smoke or water vapour, a negative value has no meaning, and the part of a model that makes clouds or rain from it will fail.
+The blow-up is gone, and the run stays stable for as long as you like. The solution is still wrong. It overshoots above 1 and undershoots below 0, and ripples that start at the sharp edges of the top hat spread over the whole domain, the smooth bump included. If ``c`` is the concentration of smoke or water vapor, a negative value has no meaning, and the part of a model that makes clouds or rain from it will fail.
 
 The time stepper cured the instability. The wiggles come from the centered flux.
 """
@@ -670,9 +703,9 @@ details("Why does the centered flux make ripples?", let
     text!(ax, 4, -1.1, text = L"c_{j+1} - c_{j-1} = 0", align = (:center, :top), color = orange, fontsize = 18)
     text!(ax, 4, 1.1, text = L"c_j", align = (:center, :bottom), fontsize = 18)
     [md"""
-    With the centered flux, the tendency of cell ``j`` is ``-a\,(c_{j+1} - c_{j-1}) / (2\Delta x)``. It uses the two neighbours of the cell and not the cell itself.
+    With the centered flux, the tendency of cell ``j`` is ``-a\,(c_{j+1} - c_{j-1}) / (2\Delta x)``. It uses the two neighbors of the cell and not the cell itself.
 
-    In the shortest wave that the grid can hold, the two neighbours of every cell are equal, so the tendency is zero everywhere: the scheme can't see this wave, and the wave doesn't move. Waves a little longer than this move, but too slowly.
+    In the shortest wave that the grid can hold, the two neighbors of every cell are equal, so the tendency is zero everywhere: the scheme can't see this wave, and the wave doesn't move. Waves a little longer than this move, but too slowly.
 
     A sharp edge is made of waves of all lengths. The long ones travel at the right speed and the short ones are left behind. They are the ripples.
     """, fig]
@@ -734,9 +767,9 @@ md"""
 
 # ╔═╡ 64819290-2e59-434b-86fa-279532560ffd
 md"""
-At ``C = 0.5`` the run is stable with the simplest time stepper, and ``c`` stays between 0 and 1 for ever, without wiggles or negative values.
+At ``C = 0.5`` the run is stable with the simplest time stepper, and ``c`` stays between 0 and 1 forever, without wiggles or negative values.
 
-Its fault is a different one: the shapes are smeared. The edges of the top hat spread out, and the bump gets lower and wider with every trip. After one trip round the domain the two schemes look like this:
+Its fault is a different one: the shapes are smeared. The edges of the top hat spread out, and the bump gets lower and wider with every trip. After one trip around the domain the two schemes look like this:
 """
 
 # ╔═╡ 406fbeee-1583-4c7e-a318-5009d186c1d4
@@ -758,11 +791,11 @@ The equation we set out to solve has no friction in it. This friction comes from
 md"""
 ### Third try: a sharper upwind flux
 
-The upwind scheme above is called **first-order**, because its error is proportional to ``\Delta x``. After one trip the bump has lost more than 40% of its height, which is far too much for a model that has to carry heat round a planet for centuries. There are two ways to reduce the error: make ``\Delta x`` smaller, or make a better estimate of the value at the face.
+The upwind scheme above is called **first-order**, because its error is proportional to ``\Delta x``. After one trip the bump has lost more than 40% of its height, which is far too much for a model that has to carry heat around a planet for centuries. There are two ways to reduce the error: make ``\Delta x`` smaller, or make a better estimate of the value at the face.
 
 #### A finer grid
 
-`advect` carries the same initial condition round the domain on a grid of `N` cells, at ``C = 0.5``.
+`advect` carries the same initial condition around the domain on a grid of `N` cells, at ``C = 0.5``.
 """
 
 # ╔═╡ d874cea2-7214-4fe3-8906-32e2c769c747
@@ -931,12 +964,12 @@ Each dot is one eigenvalue of ``A``. Green dots are inside or on the unit circle
 | method | where the eigenvalues lie | stable for |
 |:--|:--|:--|
 | centered + forward Euler | on a vertical line through 1 | no ``C`` |
-| upwind + forward Euler | on a circle of radius ``C`` centred at ``1 - C`` | ``C \le 1`` |
+| upwind + forward Euler | on a circle of radius ``C`` centered at ``1 - C`` | ``C \le 1`` |
 | centered + RK3 | just inside the circle | ``C \le 1.7`` |
 | third-order upwind + forward Euler | on a loop that leaves the circle next to 1 | no ``C`` |
 | third-order upwind + RK3 | inside the circle | ``C \le 1.6`` |
 
-For the centered flux with forward Euler, each eigenvalue is ``1 + i\,\omega\,\Delta t``, the multiplier of the oscillation test, and that is why the first run spiralled out. For the upwind flux with forward Euler and ``C \le 1``, the matrix ``A`` has no negative entries and its columns add up to 1, which makes it a Markov matrix.
+For the centered flux with forward Euler, each eigenvalue is ``1 + i\,\omega\,\Delta t``, the multiplier of the oscillation test, and that is why the first run spiraled out. For the upwind flux with forward Euler and ``C \le 1``, the matrix ``A`` has no negative entries and its columns add up to 1, which makes it a Markov matrix.
 """
 
 # ╔═╡ 7649806a-f858-4357-933d-7724a098be72
@@ -955,7 +988,7 @@ For the upwind flux with forward Euler:
 \lambda_k = 1 - C\left(1 - e^{-ik\Delta x}\right) = (1 - C) + C\,e^{-ik\Delta x} ,
 ```
 
-a circle of radius ``C`` centred at ``1 - C``.
+a circle of radius ``C`` centered at ``1 - C``.
 
 This calculation is called **von Neumann stability analysis**.
 """)
@@ -966,7 +999,7 @@ md"""
 
 The time step must shrink with the grid spacing: ``\Delta t \le \Delta x / a``. Suppose you halve the grid spacing of a three-dimensional model to see finer detail. You get ``2 \times 2 \times 2 = 8`` times as many cells, and you need twice as many time steps. The cost goes up 16 times.
 
-In a real model, ``a`` is the fastest signal of any kind: the fastest wind or current, or the fastest wave. This is the main reason that climate models, which must run for centuries, use cells that are tens of kilometres wide.
+In a real model, ``a`` is the fastest signal of any kind: the fastest wind or current, or the fastest wave. This is the main reason that climate models, which must run for centuries, use cells that are tens of kilometers wide.
 """
 
 # ╔═╡ 587f6b66-dd66-477d-afd4-228d5010f637
@@ -1029,17 +1062,19 @@ begin
         q₁ = (2c₁ - 7c₂ + 11c₃) / 6
         q₂ = (-c₂ + 5c₃ + 2c₄) / 6
         q₃ = (2c₃ + 5c₄ - c₅) / 6
-        β₁ = 13/12 * (c₁ - 2c₂ + c₃)^2 + 1/4 * (c₁ - 4c₂ + 3c₃)^2
-        β₂ = 13/12 * (c₂ - 2c₃ + c₄)^2 + 1/4 * (c₂ - c₄)^2
-        β₃ = 13/12 * (c₃ - 2c₄ + c₅)^2 + 1/4 * (3c₃ - 4c₄ + c₅)^2
-        w₁, w₂, w₃ = 0.1 / (1e-6 + β₁)^2, 0.6 / (1e-6 + β₂)^2, 0.3 / (1e-6 + β₃)^2
+        β₁ = 13//12 * (c₁ - 2c₂ + c₃)^2 + 1//4 * (c₁ - 4c₂ + 3c₃)^2
+        β₂ = 13//12 * (c₂ - 2c₃ + c₄)^2 + 1//4 * (c₂ - c₄)^2
+        β₃ = 13//12 * (c₃ - 2c₄ + c₅)^2 + 1//4 * (3c₃ - 4c₄ + c₅)^2
+        ε = oftype(c₃, 1e-6)
+        w₁, w₂, w₃ = 1//10 / (ε + β₁)^2, 6//10 / (ε + β₂)^2, 3//10 / (ε + β₃)^2
         return (w₁ * q₁ + w₂ * q₂ + w₃ * q₃) / (w₁ + w₂ + w₃)
     end
 
     function face_flux(eq, c, j, ::WENOFlux)
         from_left = wave_speed(eq, periodic(c, j), periodic(c, j + 1)) ≥ 0
-        stencil = from_left ? (j-2:j+2) : (j+3:-1:j-1)
-        return flux(eq, weno_face_value((periodic(c, k) for k in stencil)...))
+        stencil = from_left ? (periodic(c, j - 2), periodic(c, j - 1), periodic(c, j), periodic(c, j + 1), periodic(c, j + 2)) :
+                              (periodic(c, j + 3), periodic(c, j + 2), periodic(c, j + 1), periodic(c, j), periodic(c, j - 1))
+        return flux(eq, weno_face_value(stencil...))
     end
 end
 
@@ -1075,7 +1110,7 @@ Before ``t = 2`` the solution is smooth and all three methods agree with the exa
 
 First-order upwind does well here because a shock steepens itself, which works against the smearing. Of the sharper schemes, third-order upwind overshoots to 1.7 at the shock, and WENO gives a jump as clean as that of first-order upwind.
 
-The trouble starts when the flow makes a feature smaller than a grid cell, and real flows always do. The smallest swirls in the atmosphere are about a millimetre across, while the cells of a climate model are tens of kilometres wide, a gap that no computer will close. A model of the atmosphere or the ocean therefore has to give a sensible answer when the flow has features that the grid can't hold, and the advection scheme decides whether it does.
+The trouble starts when the flow makes a feature smaller than a grid cell, and real flows always do. The smallest swirls in the atmosphere are about a millimeter across, while the cells of a climate model are tens of kilometers wide, a gap that no computer will close. A model of the atmosphere or the ocean therefore has to give a sensible answer when the flow has features that the grid can't hold, and the advection scheme decides whether it does.
 """
 
 # ╔═╡ c9a1bd7e-69cb-4926-8043-3ddfd536568c
@@ -1092,7 +1127,12 @@ They are the same equation. We could apply the upwind idea to the first form dir
 """
 
 # ╔═╡ 4474c72e-97e1-4ccd-88a8-04d987e59127
-advective_tendency(u, Δx) = [-u[j] * (u[j] - periodic(u, j - 1)) / Δx for j in eachindex(u)]
+function advective_tendency!(du, u, Δx)
+    for j in eachindex(u)
+        du[j] = -u[j] * (u[j] - periodic(u, j - 1)) / Δx
+    end
+    return du
+end
 
 # ╔═╡ 03cbe4a0-0550-4536-add4-a59466629330
 md"""
@@ -1111,7 +1151,7 @@ A curve through five cells gives a better value at the face than a parabola thro
 c_{j+1/2} = \frac{2c_{j-2} - 13c_{j-1} + 47c_j + 27c_{j+1} - 3c_{j+2}}{60} .
 ```
 
-Write the `face_flux` method, for wind from the left only. The plot then shows your scheme after ten trips round the domain.
+Write the `face_flux` method, for wind from the left only. The plot then shows your scheme after ten trips around the domain.
 """
 
 # ╔═╡ 6bb4e870-0ea1-4888-aa12-0f655801d77e
@@ -1122,16 +1162,19 @@ begin
 end
 
 # ╔═╡ fc87feae-8962-40fd-873e-d5068e1b4287
-function tendency(c, eq, scheme, Δx)
+function tendency!(dc, c, eq, scheme, Δx)
     F(j) = face_flux(eq, c, j, scheme)
-    return [(F(j - 1) - F(j)) / Δx for j in eachindex(c)]
+    for j in eachindex(c)
+        dc[j] = (F(j - 1) - F(j)) / Δx
+    end
+    return dc
 end
 
 # ╔═╡ 61c05b91-c56d-4373-927e-4da6881ca2be
 centered_euler = let
     Δt = courant_centered * Δx / a
-    G(c) = tendency(c, LinearAdvection(a), CenteredFlux(), Δx)
-    simulate(c₀, G, ForwardEuler(); Δt, stop_time = 1)
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), CenteredFlux(), Δx)
+    simulate(c₀, G!, ForwardEuler(); Δt, stop_time = 1)
 end;
 
 # ╔═╡ 652c59a9-0fb1-4d74-bf75-cf6688ee45fe
@@ -1158,8 +1201,8 @@ sum(centered_euler.states[end]) * Δx - sum(c₀) * Δx
 # ╔═╡ 28b9a1be-96ca-40f7-8bc2-4e9cf3994fe6
 centered_rk3 = let
     Δt = 0.5 * Δx / a
-    G(c) = tendency(c, LinearAdvection(a), CenteredFlux(), Δx)
-    simulate(c₀, G, RK3(); Δt, stop_time = 3)
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), CenteredFlux(), Δx)
+    simulate(c₀, G!, RK3(); Δt, stop_time = 3)
 end;
 
 # ╔═╡ c003091a-8a14-4a9d-898a-86cd27fa926d
@@ -1177,8 +1220,8 @@ end
 # ╔═╡ b195ea93-3a9d-4607-b8e5-6d0c7ffdb8fe
 upwind_euler = let
     Δt = courant_upwind * Δx / a
-    G(c) = tendency(c, LinearAdvection(a), UpwindFlux(), Δx)
-    simulate(c₀, G, ForwardEuler(); Δt, stop_time = 3)
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), UpwindFlux(), Δx)
+    simulate(c₀, G!, ForwardEuler(); Δt, stop_time = 3)
 end;
 
 # ╔═╡ 18a73da5-75cc-4d8d-848d-bcba85bc16cc
@@ -1196,11 +1239,11 @@ end
 # ╔═╡ a192d708-a790-4902-86cb-7ebb9d110a48
 let
     upwind = let
-        G(c) = tendency(c, LinearAdvection(a), UpwindFlux(), Δx)
-        simulate(c₀, G, ForwardEuler(); Δt = 0.5 * Δx / a, stop_time = 1)
+        G!(dc, c) = tendency!(dc, c, LinearAdvection(a), UpwindFlux(), Δx)
+        simulate(c₀, G!, ForwardEuler(); Δt = 0.5 * Δx / a, stop_time = 1)
     end
     fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After one trip round the domain (C = 0.5)")
+    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After one trip around the domain (C = 0.5)")
     draw_profiles!(ax, x, [(label = "centered + RK3", values = state_at(centered_rk3, 1), color = scheme_colors.centered, linestyle = :dash),
                            (label = "upwind + forward Euler", values = upwind.states[end], color = scheme_colors.upwind)];
                    exact = exact_tracer(1))
@@ -1212,8 +1255,8 @@ end
 function advect(N, scheme, stepper; trips = 1)
     Δx = 1 / N
     x = Δx/2:Δx:1
-    G(c) = tendency(c, LinearAdvection(a), scheme, Δx)
-    run = simulate(initial_tracer.(x), G, stepper; Δt = 0.5 * Δx / a, stop_time = trips)
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), scheme, Δx)
+    run = simulate(initial_tracer.(x), G!, stepper; Δt = 0.5 * Δx / a, stop_time = trips)
     return (; x, c = run.states[end])
 end
 
@@ -1234,7 +1277,7 @@ let
     first_order = advect(N, UpwindFlux(), ForwardEuler())
     third_order = advect(N, UpwindThirdOrder(), RK3())
     fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "$N cells, after one trip round the domain (C = 0.5)")
+    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "$N cells, after one trip around the domain (C = 0.5)")
     draw_profiles!(ax, x, [(label = "upwind + forward Euler", values = first_order.c, color = scheme_colors.upwind),
                            (label = "third-order upwind + RK3", values = third_order.c, color = scheme_colors.third_order, linestyle = :dash)];
                    exact = exact_tracer(1))
@@ -1258,7 +1301,16 @@ let
 end
 
 # ╔═╡ d0ca6d74-be30-4ec1-8aeb-88fe0fd2a444
-tendency_matrix(scheme, N) = reduce(hcat, [tendency(Float64.(1:N .== j), LinearAdvection(1.0), scheme, 1 / N) for j in 1:N])
+function tendency_matrix(scheme, N)
+    L = zeros(N, N)
+    e = zeros(N)
+    for j in 1:N               # column j is the tendency of a unit spike in cell j
+        e .= 0
+        e[j] = 1
+        tendency!(view(L, :, j), e, LinearAdvection(1.0), scheme, 1 / N)
+    end
+    return L
+end
 
 # ╔═╡ 8c734e9a-af1f-4a95-8df6-07999529b0ea
 function step_matrix(method, C; N = 40)
@@ -1289,7 +1341,7 @@ burgers = let
     Δx = 2π / N
     x = Δx/2:Δx:2π
     Δt = 0.5 * Δx / 1.5
-    run(scheme, stepper) = simulate(u₀.(x), u -> tendency(u, Burgers(), scheme, Δx), stepper; Δt, stop_time = 6)
+    run(scheme, stepper) = simulate(u₀.(x), (du, u) -> tendency!(du, u, Burgers(), scheme, Δx), stepper; Δt, stop_time = 6)
 
     (; x, Δx,
        upwind_euler = run(UpwindFlux(), ForwardEuler()),
@@ -1300,13 +1352,14 @@ end;
 # ╔═╡ d73085ca-0234-411c-8a01-b550084b7895
 let t = time_burgers
     (; x, upwind_euler, centered_rk3, centered_euler) = burgers
-    blown_up = centered_euler.times[end] < t - 0.05
+    first_nonfinite = findfirst(u -> !all(isfinite, u), centered_euler.states)
+    blown_up = !isnothing(first_nonfinite) && centered_euler.times[first_nonfinite] ≤ t
     curves = [(label = "centered + forward Euler", values = blown_up ? fill(NaN, length(x)) : state_at(centered_euler, t), color = :gray50),
               (label = "centered + RK3", values = state_at(centered_rk3, t), color = scheme_colors.centered, linestyle = :dash),
               (label = "upwind + forward Euler", values = state_at(upwind_euler, t), color = scheme_colors.upwind)]
 
     fig = Figure(size = (800, 660))
-    title = "Burgers equation, t = $t" * (blown_up ? ". Centered + forward Euler blew up at t = $(round(centered_euler.times[end], digits = 2))" : "")
+    title = "Burgers equation, t = $t" * (blown_up ? ". Centered + forward Euler blew up at t = $(round(centered_euler.times[first_nonfinite], digits = 2))" : "")
     ax1 = Axis(fig[1, 1]; xlabel = "x", ylabel = "u", limits = (0, 2π, 0.2, 2.3), title,
                xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]))
     t ≥ 2 && vlines!(ax1, mod(π + t, 2π), color = :gray40, linestyle = :dot)
@@ -1326,8 +1379,8 @@ end
 two_forms = let
     (; x, Δx) = burgers
     Δt = 0.5 * Δx / 1.5
-    (flux_form = simulate(u₀.(x), u -> tendency(u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt, stop_time = 10),
-     advective_form = simulate(u₀.(x), u -> advective_tendency(u, Δx), ForwardEuler(); Δt, stop_time = 10))
+    (flux_form = simulate(u₀.(x), (du, u) -> tendency!(du, u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt, stop_time = 10),
+     advective_form = simulate(u₀.(x), (du, u) -> advective_tendency!(du, u, Δx), ForwardEuler(); Δt, stop_time = 10))
 end;
 
 # ╔═╡ 7ce90062-0426-454f-b160-7e62c963b1e4
@@ -1379,7 +1432,7 @@ if ismissing(face_flux(LinearAdvection(a), c₀, 1, UpwindFifthOrder()))
 else
     let
         fig = Figure(size = (800, 410))
-        ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After ten trips round the domain (C = 0.5)")
+        ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After ten trips around the domain (C = 0.5)")
         draw_profiles!(ax, x, [(label = "third-order upwind + RK3", values = advect(N, UpwindThirdOrder(), RK3(); trips = 10).c, color = scheme_colors.third_order),
                                (label = "fifth-order upwind + RK3", values = advect(N, UpwindFifthOrder(), RK3(); trips = 10).c, color = Makie.wong_colors()[6]),
                                (label = "WENO + RK3", values = advect(N, WENOFlux(), RK3(); trips = 10).c, color = scheme_colors.weno)];
@@ -1403,7 +1456,7 @@ sign_change = let
     N = 200
     Δx = 2π / N
     x = Δx/2:Δx:2π
-    run = simulate(sin.(x), u -> tendency(u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt = 0.5 * Δx, stop_time = 3)
+    run = simulate(sin.(x), (du, u) -> tendency!(du, u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt = 0.5 * Δx, stop_time = 3)
     (; x, run)
 end;
 
@@ -1433,7 +1486,7 @@ The upwind scheme needs nothing new for this problem. `wave_speed` picks the lef
 md"""
 ### 3. How fast does the error shrink?
 
-Carry the smooth bump ``c_0(x) = e^{-((x - 0.5)/0.1)^2}`` once round the domain with `N` cells, and measure the mean error ``\frac{1}{N}\sum_j |c_j - c_0(x_j)|``. Fill in the function. The plot shows the error against ``N`` on logarithmic axes.
+Carry the smooth bump ``c_0(x) = e^{-((x - 0.5)/0.1)^2}`` once around the domain with `N` cells, and measure the mean error ``\frac{1}{N}\sum_j |c_j - c_0(x_j)|``. Fill in the function. The plot shows the error against ``N`` on logarithmic axes.
 """
 
 # ╔═╡ 8792bee1-15f3-4488-8f58-a5f06c08e99e
@@ -1447,7 +1500,7 @@ end
 # ╔═╡ 0af11048-6e25-4b8a-821d-b54af3dd50b2
 details("Hint", md"""
 ```julia
-run = simulate(bump, c -> tendency(c, LinearAdvection(1.0), scheme, Δx), stepper; Δt = 0.5 * Δx, stop_time = 1)
+run = simulate(bump, (dc, c) -> tendency!(dc, c, LinearAdvection(1.0), scheme, Δx), stepper; Δt = 0.5 * Δx, stop_time = 1)
 return sum(abs, run.states[end] - bump) / N
 ```
 """)
@@ -1500,9 +1553,11 @@ backward_euler = let
     Δt = courant_backward * Δx / a
     L = tendency_matrix(CenteredFlux(), N)
     A = lu(I - Δt * L)
-    states = [c₀]
-    for n in 1:round(Int, 1 / Δt)
-        push!(states, A \ states[end])
+    nsteps = round(Int, 1 / Δt)
+    states = [similar(c₀) for n in 0:nsteps]
+    states[1] .= c₀
+    for n in 1:nsteps
+        ldiv!(states[n + 1], A, states[n])
     end
     states
 end;
@@ -1532,10 +1587,12 @@ PLUTO_PROJECT_TOML_CONTENTS = """
 [deps]
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
 PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
 
 [compat]
 CairoMakie = "~0.15.17"
+NCDatasets = "~0.14.15"
 PlutoUI = "~0.7.84"
 """
 
@@ -1543,9 +1600,9 @@ PlutoUI = "~0.7.84"
 PLUTO_MANIFEST_TOML_CONTENTS = """
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.13.3"
+julia_version = "1.13.4"
 manifest_format = "2.1"
-project_hash = "e9c829e3cd108727e002d7213607c135561366ff"
+project_hash = "d4748cb2b7ef344c02c56868c9dd53b35f9d8f38"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -1682,6 +1739,13 @@ registries = "General"
 uuid = "18cc8868-cbac-4acf-b575-c8ff214dc66f"
 version = "1.4.0"
 
+[[deps.Blosc_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Lz4_jll", "Zlib_jll", "Zstd_jll"]
+git-tree-sha1 = "37b6026a10d828f720288059f3471e675a06bb13"
+registries = "General"
+uuid = "0b7ba130-8d10-5ba8-a3d6-c5182647fed9"
+version = "1.21.8+0"
+
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
@@ -1694,6 +1758,13 @@ git-tree-sha1 = "389ad5c84de1ae7cf0e28e381131c98ea87d54fc"
 registries = "General"
 uuid = "fa961155-64e5-5f13-b03f-caf6b980ea82"
 version = "0.5.0"
+
+[[deps.CFTime]]
+deps = ["Dates", "Printf"]
+git-tree-sha1 = "fad2f199d1f1ae0c8e820ab68f81f6dbf62e60b2"
+registries = "General"
+uuid = "179af706-886a-5703-950a-314cd64e0468"
+version = "0.2.10"
 
 [[deps.CRC32c]]
 uuid = "8bf52ea8-c179-5cab-976a-9e18b702a9bc"
@@ -1794,6 +1865,13 @@ git-tree-sha1 = "0737a3e59f9d94957f5b177fa2ca40901636b85b"
 registries = "General"
 uuid = "5ae59095-9a9b-59fe-a467-6f913c188581"
 version = "0.13.4"
+
+[[deps.CommonDataModel]]
+deps = ["CFTime", "DataStructures", "Dates", "DiskArrays", "Preferences", "Printf", "Statistics"]
+git-tree-sha1 = "54d50f8a0a68ff4160564dfa09fc5de32465cfca"
+registries = "General"
+uuid = "1fbeeb36-5f17-413c-809b-666fb144f157"
+version = "0.4.4"
 
 [[deps.CommonSolve]]
 deps = ["PrecompileTools"]
@@ -1897,6 +1975,13 @@ git-tree-sha1 = "e1e28f37cbdca4b594ad86ecfe2ee8f25796ebff"
 registries = "General"
 uuid = "927a84f5-c5f4-47a5-9785-b46e178433df"
 version = "1.7.0"
+
+[[deps.DiskArrays]]
+deps = ["ConstructionBase", "LRUCache", "Mmap", "OffsetArrays"]
+git-tree-sha1 = "49bd7d5b2c773a078b076f0d491c9c30b4715586"
+registries = "General"
+uuid = "3c3547ce-8d99-4f5e-a174-61eb10b00ae3"
+version = "0.4.25"
 
 [[deps.Distributed]]
 deps = ["Random", "Serialization", "Sockets"]
@@ -2173,6 +2258,13 @@ registries = "General"
 uuid = "3955a311-db13-416c-9275-1d80ed98e5e9"
 version = "0.11.3"
 
+[[deps.HDF5_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LibCURL_jll", "Libdl", "MPIABI_jll", "MPICH_jll", "MPIPreferences", "MPItrampoline_jll", "MicrosoftMPI_jll", "OpenMPI_jll", "OpenSSL_jll", "TOML", "Zlib_jll", "aws_c_s3_jll", "dlfcn_win32_jll", "libaec_jll", "mpif_jll"]
+git-tree-sha1 = "d791a1c4c3c8f383b248a799be31105d00310204"
+registries = "General"
+uuid = "0234f1f7-429e-5d53-9886-15a909be8d59"
+version = "2.2.4+0"
+
 [[deps.HarfBuzz_jll]]
 deps = ["Artifacts", "Cairo_jll", "Fontconfig_jll", "FreeType2_jll", "Glib_jll", "Graphite2_jll", "JLLWrappers", "Libdl", "Libffi_jll"]
 git-tree-sha1 = "59d266e426ab9695f625fe2b6a51c2d3a04f1ecd"
@@ -2191,6 +2283,13 @@ version = "1.1.1"
 
     [deps.HelpPlots.weakdeps]
     Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+
+[[deps.Hwloc_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "XML2_jll", "Xorg_libpciaccess_jll"]
+git-tree-sha1 = "b60662344c62a67fa474dc50b7b06e38b23b39fa"
+registries = "General"
+uuid = "e33a78d0-f292-5ffc-b300-72abe9b543c8"
+version = "2.14.0+2"
 
 [[deps.HypergeometricFunctions]]
 deps = ["Gamma", "LinearAlgebra"]
@@ -2452,11 +2551,26 @@ registries = "General"
 uuid = "1d63c593-3942-5779-bab2-d838dc0a180e"
 version = "23.1.1+0"
 
+[[deps.LRUCache]]
+git-tree-sha1 = "5519b95a490ff5fe629c4a7aa3b3dfc9160498b3"
+registries = "General"
+uuid = "8ac3fa9e-de4c-5943-b1dc-09c6b5f20637"
+version = "1.6.2"
+weakdeps = ["Serialization"]
+
+    [deps.LRUCache.extensions]
+    SerializationExt = ["Serialization"]
+
 [[deps.LaTeXStrings]]
 git-tree-sha1 = "f88f3ccef05a6a72a0cf0ed417c8fd68530f4ab2"
 registries = "General"
 uuid = "b964fa9f-0449-5b57-a5c2-d3ea65f4040f"
 version = "1.4.1"
+
+[[deps.LazyArtifacts]]
+deps = ["Artifacts", "Pkg"]
+uuid = "4af54fe1-eca0-43a8-85a7-787d91b784e3"
+version = "1.11.0"
 
 [[deps.LazyModules]]
 git-tree-sha1 = "a560dd966b386ac9ae60bdd3a3d3a326062d3c3e"
@@ -2561,11 +2675,46 @@ version = "1.0.5"
 uuid = "56ddb016-857b-54e1-b83d-db4d58db5568"
 version = "1.11.0"
 
+[[deps.Lz4_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "7dc3b0621d7942324cc3ed3272b4a491fd5cffa7"
+registries = "General"
+uuid = "5ced341a-0733-55b8-9ab6-a4889d929147"
+version = "1.11.1+0"
+
 [[deps.MIMEs]]
 git-tree-sha1 = "c64d943587f7187e751162b3b84445bbbd79f691"
 registries = "General"
 uuid = "6c6e2e6c-3030-632d-7369-2d6c69616d65"
 version = "1.1.0"
+
+[[deps.MPIABI_jll]]
+deps = ["Artifacts", "Hwloc_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML"]
+git-tree-sha1 = "42e2cada9f35500b4d227106ce2b60e85d9f15bc"
+registries = "General"
+uuid = "b5ada748-db0f-5fc0-8972-9331c762740c"
+version = "1.0.1+0"
+
+[[deps.MPICH_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "Hwloc_jll", "JLLWrappers", "Libdl", "MPIPreferences", "TOML"]
+git-tree-sha1 = "08cb47f95a2f1b795e43a9e4f9783e68ecdc1ca6"
+registries = "General"
+uuid = "7cb0a576-ebde-5e09-9194-50597f1243b4"
+version = "5.0.3+0"
+
+[[deps.MPIPreferences]]
+deps = ["Libdl", "Preferences"]
+git-tree-sha1 = "8e98d5d80b87403c311fd51e8455d4546ba7a5f8"
+registries = "General"
+uuid = "3da0fdf6-3ccc-4f1b-acd9-58baa6c99267"
+version = "0.1.12"
+
+[[deps.MPItrampoline_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML"]
+git-tree-sha1 = "09a99227205419c00e734f413ee98c18bc1b02e4"
+registries = "General"
+uuid = "f1f71cc9-e9ae-5b93-9b94-4fe0e1ad3748"
+version = "5.5.7+0"
 
 [[deps.MacroTools]]
 git-tree-sha1 = "1e0228a030642014fe5cfe68c2c0a818f9e3f522"
@@ -2604,6 +2753,13 @@ registries = "General"
 uuid = "0a4f8689-d25c-4efe-a92b-7142dfc1aa53"
 version = "0.6.9"
 
+[[deps.MicrosoftMPI_jll]]
+deps = ["Artifacts", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML"]
+git-tree-sha1 = "3350d35d0ebcf7ccee0c66290b8e95d82419ef6f"
+registries = "General"
+uuid = "9237b28f-5490-5468-be7b-bb81f5f5e6cf"
+version = "10.1.5+0"
+
 [[deps.Missings]]
 deps = ["DataAPI"]
 git-tree-sha1 = "d9d20d6eb2a3290ba5c70a1c013b45305cc39c9e"
@@ -2624,7 +2780,7 @@ version = "0.3.4"
 
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
-version = "2026.10.20"
+version = "2026.11.5"
 
 [[deps.MuladdMacro]]
 deps = ["PrecompileTools"]
@@ -2633,12 +2789,32 @@ registries = "General"
 uuid = "46d2c3a1-f734-5fdb-9937-b9b9aeba4221"
 version = "0.2.7"
 
+[[deps.NCDatasets]]
+deps = ["CFTime", "CommonDataModel", "DataStructures", "Dates", "DiskArrays", "NetCDF_jll", "NetworkOptions", "Printf"]
+git-tree-sha1 = "5eb7747d10437f5acb2675c1f865ffa0353f3f9c"
+registries = "General"
+uuid = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+version = "0.14.15"
+
+    [deps.NCDatasets.extensions]
+    NCDatasetsMPIExt = "MPI"
+
+    [deps.NCDatasets.weakdeps]
+    MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
+
 [[deps.NaNMath]]
 deps = ["OpenLibm_jll"]
 git-tree-sha1 = "676c0f1c1c34224d6869675047a54b42fdc7b8c5"
 registries = "General"
 uuid = "77ba4419-2d1f-58cd-9bb1-8ffee604a2e3"
 version = "1.1.5"
+
+[[deps.NetCDF_jll]]
+deps = ["Artifacts", "Blosc_jll", "Bzip2_jll", "HDF5_jll", "JLLWrappers", "LibCURL_jll", "Libdl", "MPIABI_jll", "MPICH_jll", "MPIPreferences", "MPItrampoline_jll", "MicrosoftMPI_jll", "OpenMPI_jll", "TOML", "XML2_jll", "Zlib_jll", "Zstd_jll", "libaec_jll", "libzip_jll"]
+git-tree-sha1 = "62410b2b2ce08416a435f550c404a42a2e7e2b4b"
+registries = "General"
+uuid = "7243133f-43d8-5620-bbf4-c2c921802cf3"
+version = "401.1000.102+1"
 
 [[deps.Netpbm]]
 deps = ["FileIO", "ImageCore", "ImageMetadata"]
@@ -2684,7 +2860,7 @@ version = "0.3.34+0"
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
-version = "0.3.30+0"
+version = "0.3.30+1"
 
 [[deps.OpenEXR]]
 deps = ["Colors", "FileIO", "OpenEXR_jll"]
@@ -2711,6 +2887,13 @@ version = "0.32.0+0"
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "05823500-19ac-5b8b-9628-191a04bc5112"
 version = "0.8.7+0"
+
+[[deps.OpenMPI_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "Hwloc_jll", "JLLWrappers", "LazyArtifacts", "Libdl", "MPIPreferences", "TOML", "Zlib_jll"]
+git-tree-sha1 = "0dba69ef957d790d41484ca7c20212c5ac806738"
+registries = "General"
+uuid = "fe0851c0-eecd-5654-98d4-656369965a5c"
+version = "5.0.14+0"
 
 [[deps.OpenSSL_jll]]
 deps = ["Artifacts", "Libdl"]
@@ -3313,6 +3496,13 @@ registries = "General"
 uuid = "efce3f68-66dc-5838-9240-27a6d6f5f9b6"
 version = "1.1.0"
 
+[[deps.XML2_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "Libiconv_jll", "Zlib_jll"]
+git-tree-sha1 = "80d3930c6347cfce7ccf96bd3bafdf079d9c0390"
+registries = "General"
+uuid = "02c8fc9c-b97f-50b9-bbe4-9be30ff0a78a"
+version = "2.13.9+0"
+
 [[deps.XZ_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "e52eca002a11c30a858185efdfb15311e1c7a6bf"
@@ -3393,12 +3583,89 @@ deps = ["CompilerSupportLibraries_jll", "Libdl"]
 uuid = "3161d3a3-bdf6-5164-811a-617609db77b4"
 version = "1.5.7+1"
 
+[[deps.aws_c_auth_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_cal_jll", "aws_c_http_jll", "aws_c_sdkutils_jll"]
+git-tree-sha1 = "7945f94b714d20b55aee2510b511afee0ee17ad2"
+registries = "General"
+uuid = "2b3700d1-4306-52e2-a478-c162f0c514be"
+version = "1.0.1+0"
+
+[[deps.aws_c_cal_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
+git-tree-sha1 = "60a8d3fafed6f7ed8b3114793885a03330aa8e51"
+registries = "General"
+uuid = "70f11efc-bab2-57f1-b0f3-22aad4e67c4b"
+version = "1.0.0+0"
+
+[[deps.aws_c_common_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "f5ce8191ad02a5a4127d37ab5f474aee5cf91ad4"
+registries = "General"
+uuid = "73048d1d-b8c4-5092-a58d-866c5e8d1e50"
+version = "1.0.3+1"
+
+[[deps.aws_c_compression_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
+git-tree-sha1 = "6efd591b9fae7919266d3b342a18a6e6280850f9"
+registries = "General"
+uuid = "73a04cd5-f3d7-5bac-9290-e8adb709f224"
+version = "1.0.0+1"
+
+[[deps.aws_c_http_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_compression_jll", "aws_c_io_jll"]
+git-tree-sha1 = "e4108b4a2201cb9987ddd36714fdcfd572d6bb24"
+registries = "General"
+uuid = "3254fc65-9028-534d-aa9d-d76d128babc6"
+version = "1.0.0+0"
+
+[[deps.aws_c_io_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_cal_jll", "aws_c_common_jll", "s2n_tls_jll"]
+git-tree-sha1 = "b816756403a8db80e32fc23a4a1aae240d2168ca"
+registries = "General"
+uuid = "13c41daa-f319-5298-b5eb-5754e0170d52"
+version = "1.0.0+0"
+
+[[deps.aws_c_s3_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_auth_jll", "aws_c_common_jll", "aws_c_http_jll", "aws_checksums_jll", "s2n_tls_jll"]
+git-tree-sha1 = "1ebf5d4fa9c5248c3c1066124ef41d06de05a03a"
+registries = "General"
+uuid = "bd1f34fb-993f-5903-a121-aaf302eed6d4"
+version = "1.3.1+0"
+
+[[deps.aws_c_sdkutils_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
+git-tree-sha1 = "0162699e5aa99420f04a9606a9d7b38a872a81ee"
+registries = "General"
+uuid = "1282aa60-004d-510b-9f52-12498d409daa"
+version = "1.0.0+0"
+
+[[deps.aws_checksums_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl", "aws_c_common_jll"]
+git-tree-sha1 = "ee1f5427815c98355b0b0454b5fe79806ffdf935"
+registries = "General"
+uuid = "b2a88e68-78e7-5e94-8c20-c02986ec140e"
+version = "1.0.1+1"
+
+[[deps.dlfcn_win32_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "e141d67ffe550eadfb5af1bdbdaf138031e4805f"
+registries = "General"
+uuid = "c4b69c83-5512-53e3-94e6-de98773c479f"
+version = "1.4.2+0"
+
 [[deps.isoband_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl", "Pkg"]
 git-tree-sha1 = "51b5eeb3f98367157a7a12a1fb0aa5328946c03c"
 registries = "General"
 uuid = "9a68df92-36a6-505f-a73e-abb412b6bfb4"
 version = "0.2.3+0"
+
+[[deps.libaec_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "31e4c16405815484827f75a38fb7eb17432e72e3"
+registries = "General"
+uuid = "477f73a3-ac25-53e9-8cc3-50b2fa2566f0"
+version = "1.1.8+0"
 
 [[deps.libaom_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -3475,6 +3742,20 @@ registries = "General"
 uuid = "c5f90fcd-3b7e-5836-afba-fc50a0988cb2"
 version = "1.6.1+0"
 
+[[deps.libzip_jll]]
+deps = ["Artifacts", "Bzip2_jll", "JLLWrappers", "Libdl", "OpenSSL_jll", "XZ_jll", "Zlib_jll", "Zstd_jll"]
+git-tree-sha1 = "c4b294e893e8ebbb8788b68b1d56737c0f01557b"
+registries = "General"
+uuid = "337d8026-41b4-5cde-a456-74a10e5b31d1"
+version = "1.12.1+0"
+
+[[deps.mpif_jll]]
+deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl", "MPIABI_jll", "MPICH_jll", "MPIPreferences", "MPItrampoline_jll", "MicrosoftMPI_jll", "OpenMPI_jll", "TOML"]
+git-tree-sha1 = "52e322f7a6d418576cdeb043dd2a7f7ad9a8abd0"
+registries = "General"
+uuid = "9aeb927a-4695-514f-a259-621a69f20ec0"
+version = "1.0.1+0"
+
 [[deps.nghttp2_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "8e850ede-7688-5339-a07c-302acd2aaf8d"
@@ -3483,7 +3764,14 @@ version = "1.70.0+0"
 [[deps.p7zip_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
-version = "17.8.3+0"
+version = "17.8.5+0"
+
+[[deps.s2n_tls_jll]]
+deps = ["Artifacts", "JLLWrappers", "Libdl"]
+git-tree-sha1 = "6f9611b1b99beb089154f19a4031579f3a818cbd"
+registries = "General"
+uuid = "cddc5d3d-934d-5d3a-9747-62fc12ea3f48"
+version = "1.7.12+0"
 
 [[deps.x264_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -3506,14 +3794,14 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 
 # ╔═╡ Cell order:
 # ╟─91623e61-db88-4a1e-b7e6-25c23b3e1260
-# ╠═ae9a3c8c-e3d7-4f6a-af26-91efa98b9db6
+# ╟─ae9a3c8c-e3d7-4f6a-af26-91efa98b9db6
 # ╟─3a691689-54cc-4bd9-a4e0-2159e8a2dd53
 # ╟─cbbb6280-4384-46d9-8e1f-1d7d3e5a26d1
 # ╟─2ce0dfa9-f800-4eb0-b809-49826e7eef76
 # ╟─27e48d3d-859a-48bc-8324-00e73496a7ff
 # ╟─4621f04d-a10d-4a6e-9428-789a580cae3d
 # ╟─a80dc238-4349-40e8-a4a0-9a5e76aaf61a
-# ╟─80e5c2e7-6db2-4d80-bef1-c7632da09ed9
+# ╠═80e5c2e7-6db2-4d80-bef1-c7632da09ed9
 # ╟─5c15ae8f-bcfb-4f5d-bf28-b376328b7f6e
 # ╟─b0e06ea4-3962-44c3-b250-1067d559454b
 # ╟─cb9899d1-0837-42b3-88fd-6090fb831e6f
@@ -3526,6 +3814,7 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╟─43f051bb-1dbe-4f3d-b11f-94cde9e01815
 # ╟─7611f1fd-8680-423c-b52a-001b24d0601c
 # ╟─076f663d-281c-4c97-9f1d-f63ce011337f
+# ╟─96cef172-fb67-4e7b-a35a-8c3cf693b099
 # ╟─75ce0ac0-6a5c-4e8d-a1ea-84ef5598a2ef
 # ╟─b499be47-5368-4c3b-9e19-3c9a8d786ac0
 # ╟─f34fe12c-88e9-416a-9b7f-89c27f705696
@@ -3539,12 +3828,10 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╟─5430b003-fe8c-4e43-bce8-a9423705ef70
 # ╠═fc87feae-8962-40fd-873e-d5068e1b4287
 # ╟─511f6251-8445-4484-9d89-e94d102c8940
+# ╟─86bd1203-b030-4f70-b9f4-601af8e96e42
 # ╠═1889409d-d5d5-45cb-8386-1a525acd3e90
 # ╟─425e9917-fa9e-45df-a046-69dc8d64bb05
 # ╠═149f84fd-935e-4089-9c49-0a663368d586
-# ╟─6d340d8f-8160-42e7-b411-527a4f5e1a34
-# ╟─821af8d1-3528-482f-9bfb-5ae1b4d30e88
-# ╟─ff955f59-1d7a-40e4-8911-fec259969c2d
 # ╟─0c9e15a0-cdc8-43ef-a2d5-10f720707ce4
 # ╠═ddfa0a8c-34ca-4817-8986-3c4a698f8c4e
 # ╠═27a20176-a359-4a41-8385-5a098885489a
