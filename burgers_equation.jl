@@ -563,7 +563,7 @@ md"""
 md"""
 ### The first run
 
-The domain has length 1 and 100 cells. The wind blows to the right with ``a = 1``, so the exact solution comes back to where it started at ``t = 1``. The initial condition has a smooth bump and a top hat with sharp edges.
+The domain has length 1 and 100 cells. Let's solve the linear advection equation [(7)](#eq-linear-advection)) with a consstant background velocity ``a = 1`` so that the exact solution returns to its initial state at ``t = 1``. The initial condition has a smooth bump and a top hat with sharp edges.
 """
 
 # ╔═╡ ddfa0a8c-34ca-4817-8986-3c4a698f8c4e
@@ -590,12 +590,12 @@ C = \frac{a\,\Delta t}{\Delta x}
 
 the fraction of a cell that the wind crosses in one time step. We choose ``C`` and get ``\Delta t`` from it.
 
-**Courant number:** $(@bind courant_centered Slider([0.01, 0.1, 0.25, 0.5, 1.0], default = 0.5, show_value = true))
+**Courant number:** $(@bind courant_centered Slider([0.01, 0.1, 0.25, 0.5, 0.75], default = 0.25, show_value = true))
 """
 
 # ╔═╡ 7b1a6aed-13de-4739-ae0c-522ac9e0d3fe
 md"""
-**Time:** $(@bind time_centered Slider(0:0.02:1, default = 0.1, show_value = true))
+**Time:** $(@bind time_centered Slider(0:0.02:1, default = 0, show_value = true))
 """
 
 # ╔═╡ 6b549874-6cc2-4078-ad99-83af21f3df0d
@@ -608,11 +608,13 @@ begin
 
     exact_tracer(t) = (xs = 0:0.001:1; (xs, initial_tracer.(mod.(xs .- a * t, 1))))
 
+    l2_error(c, t) = sqrt(Δx * sum(abs2, c .- initial_tracer.(mod.(x .- a * t, 1))))
+
     function draw_profiles!(ax, x, curves; exact = nothing)
-        isnothing(exact) || lines!(ax, exact..., color = :black, linewidth = 1, label = "exact")
+        isnothing(exact) || lines!(ax, exact..., color = :black, linewidth = 2, label = "exact")
         for curve in curves
             lines!(ax, x, curve.values; color = curve.color, label = curve.label,
-                   linestyle = get(curve, :linestyle, :solid), linewidth = 1.5)
+                   linestyle = get(curve, :linestyle, :solid), linewidth = 3)
         end
         return ax
     end
@@ -620,80 +622,126 @@ begin
     legend_below!(position, ax) = Legend(position, ax, orientation = :horizontal, framevisible = false, tellwidth = false)
 end;
 
+# ╔═╡ 32820619-016e-4e37-a04b-394a7ed6d418
+md"""
+To measure how far the numerical solution is from the exact one, we use the ``L^2`` error. At time ``t``, we compare the value ``c_i`` in each cell with the exact solution at the cell's position ``x_i``, then add up the squared differences:
+```math
+\| c - c_\text{exact} \|_2 = \sqrt{\Delta x \sum_{i=1}^{N} \big(c_i - c_\text{exact}(x_i, t)\big)^2},
+```
+where ``c_\text{exact}(x, t) = c_0(x - a t)`` is the initial profile moved a distance ``a t``, wrapping around the periodic domain. The factor ``\Delta x`` makes the sum an approximation of ``\left(\int_0^1 (c - c_\text{exact})^2\,dx\right)^{1/2}``.
+"""
+
+
 # ╔═╡ 3ae7b80b-b2ac-481b-9d3d-aeda8f6cc9e6
 md"""
-The run fails. Wiggles a few cells wide appear near the sharp edges of the top hat and grow. On the logarithmic axis the growth is a straight line, so it is exponential, and at ``C = 0.5`` the largest value is above ``10^8`` after one trip around the domain.
+What is happening to the run? How do our numerical results agree with the exact solution? Where/When does our numerical solution begin to deviate from the exact solution? How do the errors depend on time as well as the Courant number?
+"""
 
-A smaller time step slows the growth but leaves it in place. At ``C = 0.1`` the wiggles grow more slowly. At ``C = 0.01`` the solution survives one trip, full of wiggles that are still growing.
+# ╔═╡ 683b8170-49b6-4a1e-bbfe-0766f3829850
+details("Solution", md"""
 
-All the while, the total amount of ``c`` is conserved to the last digit:
+When integrating the solution forward, small-scale oscillations begin to emerge which originate from the sharp jumps of the top hat function. The L2 error of our numerical result with the analytical solution grows exponentially in time as seen from the straight line in the semilogarithmic axis.
+
+The larger the Courant number, the higher the rate of growth of the L2 errors with time, and at every Courant number ``C > 0`` the error grows exponentially with time. This means that no matter how small of a timestep we use, the small-scale oscillations emerge and the errors grow.
+
+If we do a linear stability analysis of this numerical scheme, one would find out that this scheme is _unconditionally unstable_, meaning that no matter how much we increase spatial and temporal resolution, the errors of our solution grow exponentially with time.
+""")
+
+# ╔═╡ 4785897b-7c5f-4a06-932f-85b84b768513
+md"""
+What is happening to the total amount of ``c`` in our numerical solution? Let's calculate it:
 """
 
 # ╔═╡ 880d45fc-e31a-4367-8779-f612ce736fe8
-md"""
-A method can conserve the total exactly and still be unstable.
-"""
+details("Solution", md"""
+``c`` is conserved up to numerical precision. This is by construction of the finite volume method and is why it is used in many fluid dynamical solvers.
+		
+However, the solution is nonetheless unstable, even if ``c`` is conserved exactly.
+""")
 
 # ╔═╡ c05b017e-4779-489a-962d-91926577e07f
 md"""
-### Is the time stepper to blame?
+### A higher-order timestepper
 
-Our method has two parts, the flux in space and the stepper in time, and either could be at fault. To find out, change the time stepper and nothing else. A more accurate one is the third-order **Runge–Kutta** method, RK3, which takes three Euler steps and blends them.
+Our method has two discretizations, spatially for the fluxes and temporally with the timestepper. Let's try using a higher-order timestepper to see if we can improve upon our numerical solution.
+
+There are a wide range of timesteppers (you can explore many options in `DifferentialEquations.jl`) with a various mathematical properties, such as energy conserving, strong stability preserving, symplectic, positivity preserving etc.
+A more accurate timestepper that is commonly used is the fourth-order **Runge–Kutta** method, RK4. It evaluates the tendency four times: once at the start of the step, twice at the midpoint and once at the end. Each evaluation uses the one preceding it, so each substep has to be evaluated sequentially. Below we write down an RK4 step:
+
+```math
+\begin{aligned}
+k_1 &= G(c^{n}) , \\
+k_2 &= G\!\left(c^{n} + \tfrac{\Delta t}{2}\,k_1\right) , \\
+k_3 &= G\!\left(c^{n} + \tfrac{\Delta t}{2}\,k_2\right) , \\
+k_4 &= G\!\left(c^{n} + \Delta t\,k_3\right) .
+\end{aligned}
+```
+
+One complete step then uses a weighted average of the four tendencies:
+
+```math
+c^{n+1} = c^{n} + \frac{\Delta t}{6}\left(k_1 + 2k_2 + 2k_3 + k_4\right) .
+```
+
+The error of forward Euler is proportional to ``\Delta t``, making it a first-order method. The error of RK4 is proportional to ``\Delta t^4``, so halving the time step makes it 16 times smaller, hence the "fourth-order" in its name.
 """
 
 # ╔═╡ 83b1054a-d95a-4bca-a219-c1eaed0ae83a
 begin
-    struct RK3 end
+    struct RK4 end
 
-    allocate_workspace(::RK3, c) = (; dc = similar(c), c¹ = similar(c), c² = similar(c))
+    allocate_workspace(::RK4, c) = (; k₁ = similar(c), k₂ = similar(c), k₃ = similar(c), k₄ = similar(c), cˢ = similar(c))
 
-    function advance!(c, Δt, G!, ::RK3, workspace)
-        (; dc, c¹, c²) = workspace
-        G!(dc, c)
-        @. c¹ = c + Δt * dc
-        G!(dc, c¹)
-        @. c² = 3//4 * c + 1//4 * (c¹ + Δt * dc)
-        G!(dc, c²)
-        @. c = 1//3 * c + 2//3 * (c² + Δt * dc)
+    function advance!(c, Δt, G!, ::RK4, workspace)
+        (; k₁, k₂, k₃, k₄, cˢ) = workspace
+        G!(k₁, c)
+        @. cˢ = c + Δt / 2 * k₁
+        G!(k₂, cˢ)
+        @. cˢ = c + Δt / 2 * k₂
+        G!(k₃, cˢ)
+        @. cˢ = c + Δt * k₃
+        G!(k₄, cˢ)
+        @. c += Δt / 6 * (k₁ + 2k₂ + 2k₃ + k₄)
         return c
     end
 end
 
-# ╔═╡ 149f84fd-935e-4089-9c49-0a663368d586
-function simulate(c₀, G!, stepper; Δt, stop_time)
-    nsteps = round(Int, stop_time / Δt)
-    Δt = convert(eltype(c₀), Δt)
-    times  = [n * Δt for n in 0:nsteps]
-    states = [similar(c₀) for n in 0:nsteps]
-    c = copy(c₀)
-    workspace = allocate_workspace(stepper, c)
-    states[1] .= c
-    for n in 1:nsteps
-        advance!(c, Δt, G!, stepper, workspace)
-        states[n + 1] .= c
-    end
-    return (; times, states)
-end
-
 # ╔═╡ 16adfbd5-1653-496d-b6fc-ca10d8417b48
 md"""
-`simulate`, `tendency!` and `face_flux` are unchanged. Julia picks the right `advance!` from the type of the `stepper` argument, which is multiple dispatch at work.
+`simulate`, `tendency!` and `face_flux` are unchanged. Using multiple dispatch, Julia picks the right `advance!` from the type of the `stepper` argument.
 """
 
 # ╔═╡ 0d11739c-14a6-4435-980e-22f93a422833
 md"""
-**Time:** $(@bind time_rk3 Slider(0:0.05:3, default = 0.5, show_value = true))
+**Courant number:** $(@bind courant_rk4 Slider([0.1, 0.5, 1, 2, 2.5, 2.8, 2.83, 2.84, 2.9, 3], default = 2, show_value = true))
+
+**Time:** $(@bind time_rk4 Slider(0:0.05:3, default = 0, show_value = true))
 """
 
 # ╔═╡ d4349e75-f356-4696-87c4-67465e6eb687
 md"""
-The blow-up is gone, and the run stays stable for as long as you like. The solution is still wrong. It overshoots above 1 and undershoots below 0, and ripples that start at the sharp edges of the top hat spread over the whole domain, the smooth bump included. If ``c`` is the concentration of smoke or water vapor, a negative value has no meaning, and the part of a model that makes clouds or rain from it will fail.
-
-The time stepper cured the instability. The wiggles come from the centered flux.
+What do you notice this time that is similar and different from the solution computed with the forward Euler method? Are there small-scale oscillations? How do the errors grow in time? Do error growth properties change qualitatively under different Courant numbers? If yes, in what ways do they change and where does it change?
 """
 
-# ╔═╡ db567831-19b6-4ca7-8abf-05e81e3d00cd
-details("Why does the centered flux make ripples?", let
+# ╔═╡ 9ffd8326-5c02-4648-996d-826d6e4ff0c8
+details("Solution:", md"""
+
+Using RK4 did not eliminate the small-scale oscillations, which still originate from the top hat jumps and propagate into the entire solution over time.
+
+However, up to ``C \approx 2.83``, the errors do not grow exponentially in time. Instead, they seem to grow initially and plateau off instead of going unbounded, which is unlike what we found for the forward Euler method which is unconditionally unstable. For larger ``C``s, there is a transition in the solution property where errors begin to grow exponentially with time like in the forward Euler case. This illustrates computationally that there is a maximum Courant number that we can use to obtain stable solutions, meaning that we cannot increase the time step as much as we desire with no regard to a scheme's stability limit.
+
+If you go through the linear stability analysis of this scheme, you will find that the stability regime is ``C \leq 2 \sqrt{2} \approx 2.83``, just as we found!
+""")
+
+# ╔═╡ cdd542a9-891c-48d0-b3a7-f7e7dc158e1d
+md"""
+### Odd--even decoupling
+
+With the centered flux, the tendency of cell ``j`` is ``-a\,(c_{j+1} - c_{j-1}) / (2\Delta x)``. It uses the two neighbors of the cell and not the cell itself.
+"""
+
+# ╔═╡ 90218f47-9629-4bec-8e11-feb253f3d25c
+let
     blue, orange = Makie.wong_colors()[1:2]
     fig = Figure(size = (700, 260))
     ax = Axis(fig[1, 1], xlabel = "cell", ylabel = "c", limits = (0.5, 8.5, -1.6, 1.6), xticks = 1:8,
@@ -702,22 +750,21 @@ details("Why does the centered flux make ripples?", let
     lines!(ax, [3, 5], [-1, -1], color = orange, linewidth = 3)
     text!(ax, 4, -1.1, text = L"c_{j+1} - c_{j-1} = 0", align = (:center, :top), color = orange, fontsize = 18)
     text!(ax, 4, 1.1, text = L"c_j", align = (:center, :bottom), fontsize = 18)
-    [md"""
-    With the centered flux, the tendency of cell ``j`` is ``-a\,(c_{j+1} - c_{j-1}) / (2\Delta x)``. It uses the two neighbors of the cell and not the cell itself.
+    fig
+end
 
-    In the shortest wave that the grid can hold, the two neighbors of every cell are equal, so the tendency is zero everywhere: the scheme can't see this wave, and the wave doesn't move. Waves a little longer than this move, but too slowly.
+# ╔═╡ e7770fa6-a668-45f5-a6bb-04dd1068fb07
+md"""
+Let's look at the figure above, where the blue line shows a wave on the smallest scale that the grid is able to resolve. If we use the centered flux scheme, the two neighbors of every cell are equal. This means that the tendency is zero everywhere for this wave, which is "invisible" to the numerical scheme. The centered scheme can't see this wave, so the wave doesn't move, and the tendency of an even cell depends only on odd cells, and vice versa. This means that the two sets of cells can drift apart without the scheme noticing. This is called **odd–even decoupling**. In two dimensions the same pattern looks like a checkerboard, and it is called **checkerboarding**.
 
-    A sharp edge is made of waves of all lengths. The long ones travel at the right speed and the short ones are left behind. They are the ripples.
-    """, fig]
-end)
+Here, short waves move much more slowly than long waves. A sharp edge such as the top hat jump is composed of waves of all length scales. As the scheme evolves the solution, the long ones travel at the right speed and the short ones are left behind, forming the small-scale ripples/oscillations we saw above. A wave speed that depends on wavelength when it shouldn't is called **numerical dispersion**.
+"""
 
 # ╔═╡ 48bee702-7b53-4558-ba2b-461d13c4d75c
 md"""
-### Second try: the upwind flux
+### Upwind flux
 
-Advection carries information with the flow. If the wind blows from left to right, the fluid that crosses the face ``j + 1/2`` in the next instant is the fluid that is in cell ``j`` now. The fluid in cell ``j + 1`` is moving away from the face and has no influence on what crosses it, yet the centered flux gives it half the weight.
-
-So take the value at the face from the side that the wind comes from, the **upwind** side:
+Instead of a centered flux scheme, let's consider an alternative. Physically, advection carries information with the flow. So, if the wind blows from left to right, the fluid that crosses the face ``j + 1/2`` in the next instant is the fluid that is in cell ``j`` now. The fluid in cell ``j + 1`` is moving away from the face and has no influence on what crosses it, yet the centered flux gives it the same weight as the fluid in cell ``j``, which is the fluid that actually crosses. It makes more sense to put a greater importance on the side the wind comes from. The simplest choice just takes the value at the face from the upwind cell alone, which is also called the _first-order upwind flux_:
 
 ```math
 F_{j+1/2} = \begin{cases} a\,c_j & \text{if } a > 0 \\ a\,c_{j+1} & \text{if } a < 0 . \end{cases}
@@ -755,43 +802,75 @@ In code, the scheme asks the equation for the `wave_speed` at the face, and take
 
 # ╔═╡ 4e670940-e9c0-4926-84b7-e0e41a00e92b
 md"""
-Run it with plain forward Euler, the stepper that failed before.
+Now let's run the same setup as above, with a first-order upwind scheme and forward Euler.
 
 **Courant number:** $(@bind courant_upwind Slider(0.1:0.1:1.2, default = 0.5, show_value = true))
 """
 
 # ╔═╡ 2d1daf3c-c577-41d2-a988-774999f12fdc
 md"""
-**Time:** $(@bind time_upwind Slider(0:0.05:3, default = 1, show_value = true))
+**Time:** $(@bind time_upwind Slider(0:0.05:3, default = 0, show_value = true))
 """
+
+# ╔═╡ 72cfa962-cf69-4d1a-ba0f-bbe1b1ceae5e
+md"""
+How do the results compare with the centered flux? Are there small-scale oscillations or negative values? How do the errors change as you lower the Courant number, and is that what you expected? What happens at ``C = 1``, and above it?
+"""
+
+# ╔═╡ cb81dc31-4987-4fd5-850f-fcd380d4a6f4
+details("Solution", md"""
+For ``C < 1`` the run is stable, and ``c`` stays between 0 and 1. Using the upwind scheme, there are no ripples and negative values. However, we see that the bump and the top hat smear out over time and their peaks drop. The errors still grow in time, but plateau after some time and stay bounded.
+
+For ``C > 1``, the scheme is unstable and errors grow exponentially with time.
+
+As ``C`` decreases, the smearing out of the bumps are increasingly worse.
+		
+Notably, something special happens at ``C = 1``, where the error is at the level of round-off and the solution is virtually exact.
+
+Why do we observe the behavior above? Let's do a truncation error analysis of the scheme. First, we write down the actual equation equation the scheme actually solves. For ``a > 0``, upwind + forward Euler is
+
+```math
+c_j^{n+1} = c_j^{n} - C\,\big(c_j^{n} - c_{j-1}^{n}\big) .
+```
+
+Treat ``c_j^n`` as a smooth function ``c(x_j, t^n)`` and expand both neighbors in Taylor series around ``(x_j, t^n)``:
+
+```math
+c_j^{n+1} = c + \Delta t\,\frac{\partial c}{\partial t} + \frac{\Delta t^2}{2}\,\frac{\partial^2 c}{\partial t^2} + \dots, \qquad
+c_{j-1}^{n} = c - \Delta x\,\frac{\partial c}{\partial x} + \frac{\Delta x^2}{2}\,\frac{\partial^2 c}{\partial x^2} - \dots
+```
+
+Put these into the scheme, divide by ``\Delta t`` and use ``C/\Delta t = a/\Delta x``:
+
+```math
+\frac{\partial c}{\partial t} + a\,\frac{\partial c}{\partial x} = \underbrace{\frac{a\,\Delta x}{2}\,\frac{\partial^2 c}{\partial x^2}}_{\text{from the upwind flux}} \; - \; \underbrace{\frac{\Delta t}{2}\,\frac{\partial^2 c}{\partial t^2}}_{\text{from forward Euler}} + \dots
+```
+
+To leading order ``\partial c/\partial t = -a\,\partial c/\partial x``, so ``\partial^2 c/\partial t^2 = a^2\,\partial^2 c/\partial x^2``, and the two terms combine into
+
+```math
+\frac{\partial c}{\partial t} + a\,\frac{\partial c}{\partial x} = \frac{a\,\Delta x}{2}\,(1 - C)\,\frac{\partial^2 c}{\partial x^2} .
+```
+
+When we discretize the continuous equation to solve it numerically with this scheme, we are in reality solving the advection equation plus a diffusion term that comes from the numerics. This is called **numerical diffusion**. Numerical diffusion is an important consideration when designing advection schemes as we do not want to smear out the details of the fluid structure unnecessarily. In this example, the upwind flux contributes the diffusivity ``a\Delta x/2`` while forward Euler contributes ``-a^2\Delta t/2``, a negative diffusivity. This is also why centered + forward Euler is unconditionally unstable, as a negative diffusivity will eventually lead to blow up if there are no other terms that counteract it.
+
+In the equation above, we notice that the right hand side is equal to 0 when ``C = 1``. Reducing the time steps (which is equivalent to a smaller ``C``) actually worsens the solution as the bumps are smeared out! We also note that a finer grid will reduce ``a\Delta x/2`` and thus the smearing. For ``C > 1`` the total diffusivity is negative, and the run blows up.
+""")
+
 
 # ╔═╡ 64819290-2e59-434b-86fa-279532560ffd
 md"""
-At ``C = 0.5`` the run is stable with the simplest time stepper, and ``c`` stays between 0 and 1 forever, without wiggles or negative values.
-
-Its fault is a different one: the shapes are smeared. The edges of the top hat spread out, and the bump gets lower and wider with every trip. After one trip around the domain the two schemes look like this:
-"""
-
-# ╔═╡ 406fbeee-1583-4c7e-a318-5009d186c1d4
-md"""
-Wiggles and smearing are the two typical faults of an advection scheme, and much of the effort that goes into the numerics of a climate model is spent on schemes that have little of both.
-
-To see where the smearing comes from, write the upwind flux (for ``a > 0``) in a different way:
-
-```math
-a\,c_j = \underbrace{a\,\frac{c_j + c_{j+1}}{2}}_{\text{centered flux}} - \underbrace{\frac{a}{2}\,(c_{j+1} - c_j)}_{\text{correction}} .
-```
-
-The upwind flux is the centered flux plus a correction. The correction moves ``c`` from the cell that has more to the cell that has less, so it smooths, like friction, and that is what removes the wiggles. Its size is proportional to ``c_{j+1} - c_j``, which gets smaller as the grid gets finer.
-
-The equation we set out to solve has no friction in it. This friction comes from the method, and the ocean model in the next notebook relies on it.
+Comparing between centered + RK4 and upwind + forward Euler at ``C = 0.5``:
 """
 
 # ╔═╡ e8d57055-b03a-4a43-9c27-bb51dfa174f6
 md"""
-### Third try: a sharper upwind flux
+### Increasing the spatial accuracy
 
-The upwind scheme above is called **first-order**, because its error is proportional to ``\Delta x``. After one trip the bump has lost more than 40% of its height, which is far too much for a model that has to carry heat around a planet for centuries. There are two ways to reduce the error: make ``\Delta x`` smaller, or make a better estimate of the value at the face.
+There are two ways to reduce the error/improve the accuracy of the scheme:
+
+1. Make ``\Delta x`` smaller
+2. Make a better estimate of the value at the face using higher-order methods
 
 #### A finer grid
 
@@ -805,11 +884,11 @@ md"""
 
 # ╔═╡ 3ae070e5-6dbb-47ba-89f2-312dc7f9268f
 md"""
-The smearing shrinks slowly: with 1000 cells the bump is still 9% too low. The cost rises much faster. The Courant number is fixed, so ten times the cells also means ten times the time steps, and the run takes 100 times the work. In three dimensions the same refinement takes 10,000 times the work.
+The smearing shrinks slowly with grid refinement. At every refinement, the cost rises much faster, as the Courant number needs to be fixed. For a grid refinement of ``10 \times``, the number of time steps required to run for the same duration is also ``10 \times``, so the run is approximately ``100 \times`` more computationally expensive. In 3D, the same ``10 \times`` refinement is ``10,000 \times`` more expensive! This is why despite the dramatic advances in computational power, fluid dynamics remain one of the most computationally expensive problems to simulate accurately.
 
 #### A better value at the face
 
-The first-order scheme uses ``c_j`` as the value at the face, as if ``c`` were flat inside each cell. A parabola describes a smooth function much better. Take the two cells on the upwind side of the face and one cell on the downwind side, and find the parabola that has the right average in each of the three. For ``a > 0``, its value at the face is
+The first-order scheme uses ``c_j`` as the value at the face, as if ``c`` were flat inside each cell. However, a parabola describes a smooth function much better. If we take the two cells on the upwind side of the face and one cell on the downwind side, and find a parabola such that it has the right average value in each of the three cells, we would obtain the _third-order upwind scheme_. For ``a > 0``, its value at the face is
 
 ```math
 c_{j+1/2} = \frac{-c_{j-1} + 5c_j + 2c_{j+1}}{6} .
@@ -846,44 +925,40 @@ In the code, `c₁`, `c₂` and `c₃` are the three cells in the order in which
 
 # ╔═╡ f732b713-9754-490d-8c6a-1693cdaaafe7
 md"""
-The error of this scheme is proportional to ``\Delta x^3``, so it is called **third-order**. It needs RK3: with forward Euler it blows up, as the centered flux did.
+The error of this scheme is proportional to ``\Delta x^3``, so it is called **third-order**. It needs a time stepper such as RK4, because it blows up with forward Euler. As we saw above, forward Euler on its own is slightly anti-diffusive which is counteracted by first-order upwind's diffusion. The damping of third-order upwind is a fourth derivative, ``-\frac{a\Delta x^3}{12}\frac{\partial^4 c}{\partial x^4}``, which acts mostly on short waves and is too weak for long waves, so they grow.
 """
+
 
 # ╔═╡ 43688d97-1248-4756-98a5-152054c8a16c
 md"""
 With the same 100 cells the bump keeps 96% of its height. First-order upwind needs about 2000 cells for that, at 400 times the work.
 
-The cost is a small wiggle at each sharp edge, where ``c`` now runs from about −0.06 to 1.06. Like the first-order flux, this one is the centered flux plus a correction:
+However, the third-order upwind scheme creates small overshoots and undershoots on both sides of each edge of the top hat. Ordinary diffusion smooths a jump without ever going above or below the values on either side, but the fourth-derivative damping of this scheme smooths it with overshoots on both sides. The wiggles are also lopsided: at each edge the larger one is on the upwind side.
 
-```math
-\frac{-c_{j-1} + 5c_j + 2c_{j+1}}{6} = \frac{c_j + c_{j+1}}{2} - \frac{c_{j+1} - 2c_j + c_{j-1}}{6} .
-```
+#### Is there a free lunch?
 
-The correction is now a difference of two differences, which measures how sharply the data bends. It is very small where the data is smooth and large only for features a few cells wide, so the friction acts where the centered flux made its ripples and almost nowhere else.
+From what we have seen so far, it seems like in order to gain accuracy by using a third-order upwinding scheme, we would have to sacrifice the monotonicity (not generating new extrema) of the method. Is that truly the case? Can we have both accuracy and monotonicity? [Godunov's theorem](https://en.wikipedia.org/wiki/Godunov%27s_theorem) states that
 
-#### A scheme that looks at the data
+> Linear numerical schemes for solving partial differential equations, having the property of not generating new extrema (monotone scheme), can be at most first-order accurate.
 
-A cleverer fixed formula can't remove the last wiggles. Godunov proved in 1959 that a scheme which uses the same formula everywhere is either first-order or makes wiggles at sharp features. The **WENO** schemes (weighted essentially non-oscillatory) escape the theorem because their formula depends on the data. They compute several estimates of the face value from different groups of cells and give the most weight to the group in which the data is smoothest, so near a jump they read only the cells on its smooth side.
+So, is all hope lost? We sure hope not! There is a family of advection schemes known as the **WENO** (weighted essentially non-oscillatory) method [Shu (2009)](https://doi.org/10.1137/070679065) which let us enjoy both high accuracy and monotonicity (to a large extent), sidestepping the constraints of Godunov's theorem. This is because the scheme is not uniform across the domain, but depends on the data ([Liu et al., 1994](https://doi.org/10.1006/jcph.1994.1187)). 
+
+They compute several estimates of the face value from different groups of cells, and weight each one by how smooth the data is in its group. Where the solution is smooth, the weights blend all the estimates into one of high order (fifth order here). Near a jump, the scheme drops to a lower order. The version used here, with its measure of smoothness ``\beta``, is the one of [Jiang & Shu (1996)](https://doi.org/10.1006/jcph.1996.0130). [Balsara & Shu (2000)](https://doi.org/10.1006/jcph.2000.6443) extended it to higher orders. Fun fact, Oceananigans.jl also uses WENO to advect momentum in ocean models ([Silvestri et al., 2024](https://doi.org/10.1029/2023MS004130)).
 
 The folded cell below has a fifth-order WENO scheme. It is one more method for `face_flux`, and the rest of the solver is unchanged.
-"""
-
-# ╔═╡ dd9201fc-3a6f-485a-9403-81605597e83c
-md"""
-WENO keeps 99% of the bump and stays between 0 and 1. Schemes of this family carry heat, salt and momentum in the ocean model of the next notebook.
 """
 
 # ╔═╡ 98e876ad-55f2-446b-b9fb-bb78c30e8a61
 md"""
 ### The limit on the time step
 
-Go back to the first-order upwind run and move its Courant number slider. At ``C = 1`` the answer is exact, because each time step moves the data by one cell. At ``C = 1.1`` the run blows up. The limit ``C = 1`` is the **CFL condition**, named after Courant, Friedrichs and Lewy, who found it in 1928:
+Go back to the first-order upwind run and move its Courant number slider. At ``C = 1`` the answer is exact, because each time step moves the data by one cell. At ``C = 1.1`` the run blows up. The centered flux with RK4, on the other hand, stayed stable up to ``C \approx 2.8``. Every explicit scheme has a largest stable Courant number ``C_\text{max}``, but its value depends on the scheme:
 
 ```math
-C = \frac{a\,\Delta t}{\Delta x} \le 1 \qquad\text{or}\qquad \Delta t \le \frac{\Delta x}{a} .
+C = \frac{a\,\Delta t}{\Delta x} \le C_\text{max} \qquad\text{or}\qquad \Delta t \le C_\text{max}\,\frac{\Delta x}{a} .
 ```
 
-The fluid must not cross more than one cell in one time step. Three arguments lead to this limit.
+Two arguments explain where the limit comes from. The first gives a condition that every scheme must meet, and the second explains why ``C_\text{max} = 1`` for upwind with forward Euler.
 """
 
 # ╔═╡ 9570641e-f3d1-4a2c-944a-8696313faf13
@@ -918,6 +993,10 @@ end
 # ╔═╡ a4ca19fb-8262-4d56-a0dc-c42e029e2995
 md"""
 The new value in cell ``j`` is computed from the old values in cells ``j - 1`` and ``j`` (the blue triangle). The fluid that arrives at ``x_j`` after one step started at ``x_j - a\,\Delta t``. If ``C > 1``, it started further away than cell ``j - 1``. The scheme has no access to the information it needs, and no formula can repair that.
+
+This is the **CFL condition**, named after Courant, Friedrichs and Lewy, who found it in 1928: the cells that a scheme reads must include the place where the fluid comes from. How far a scheme reads depends on the scheme. RK4 evaluates the tendency four times per step, and each evaluation reaches one cell further than the one before, so ``c_j^{n+1}`` depends on the cells from ``j - 4`` to ``j + 4``. For RK4 the CFL condition only requires ``C \le 4``.
+
+The CFL condition is necessary, but not sufficient. The centered flux with forward Euler reads cells ``j - 1`` to ``j + 1``, so it meets the condition whenever ``C \le 1``, yet it blows up at every ``C``. The centered flux with RK4 meets it up to ``C = 4``, but is stable only up to ``C = 2\sqrt{2} \approx 2.8``. The actual limit depends on how the flux and the time stepper treat each wave, and a **stability analysis** finds it (Exercise 4).
 """
 
 # ╔═╡ b681d694-31fd-4d02-b794-e39fa928f792
@@ -933,71 +1012,15 @@ c_j^{n+1} = c_j^n - C\,(c_j^n - c_{j-1}^n) = (1 - C)\,c_j^n + C\,c_{j-1}^n .
 If ``0 \le C \le 1``, the new value is a weighted average of two old values, with weights between 0 and 1. An average is never larger than the largest of its inputs or smaller than the smallest. So no new maximum or minimum can ever appear. That is why the upwind solution stays between 0 and 1.
 
 If ``C > 1``, one weight is negative. The scheme then extrapolates beyond the two values, and every step overshoots a little more than the last.
+
+This argument needs every weight to be positive. The centered and third-order fluxes have negative weights at every ``C``, so for them the limit has to come from a stability analysis (Exercise 4). It gives ``C \le 2.8`` for the centered flux with RK4 and ``C \le 1.7`` for third-order upwind with RK4.
 """
-
-# ╔═╡ a1be5695-b54c-48a2-b153-207b4f231e8e
-md"""
-#### 3. Eigenvalues
-
-The tendency is linear in ``c``, so one time step is a matrix multiplication:
-
-```math
-c^{n+1} = A\,c^{n}, \qquad\text{and after } n \text{ steps}\qquad c^{n} = A^n\,c^{0} .
-```
-
-From 18.06: powers of a matrix grow if any eigenvalue has ``|\lambda| > 1``, and stay bounded if all of them are inside or on the unit circle.
-
-We can build ``A`` without any algebra. Column ``j`` of the tendency matrix is the tendency of a vector that is 1 in cell ``j`` and 0 elsewhere.
-"""
-
-# ╔═╡ 4b79a694-99fa-459a-aa82-bcdaf1372a6a
-md"""
-**Method:** $(@bind time_step_method Select(["centered + forward Euler", "upwind + forward Euler", "centered + RK3", "third-order upwind + forward Euler", "third-order upwind + RK3", "centered + backward Euler"]))
-
-**Courant number:** $(@bind courant_eigenvalues Slider(0.1:0.1:2, default = 0.5, show_value = true))
-"""
-
-# ╔═╡ 68c244a3-9089-4d61-988b-216967b43790
-md"""
-Each dot is one eigenvalue of ``A``. Green dots are inside or on the unit circle. Red dots are outside, and each red dot is a pattern that grows at every step.
-
-| method | where the eigenvalues lie | stable for |
-|:--|:--|:--|
-| centered + forward Euler | on a vertical line through 1 | no ``C`` |
-| upwind + forward Euler | on a circle of radius ``C`` centered at ``1 - C`` | ``C \le 1`` |
-| centered + RK3 | just inside the circle | ``C \le 1.7`` |
-| third-order upwind + forward Euler | on a loop that leaves the circle next to 1 | no ``C`` |
-| third-order upwind + RK3 | inside the circle | ``C \le 1.6`` |
-
-For the centered flux with forward Euler, each eigenvalue is ``1 + i\,\omega\,\Delta t``, the multiplier of the oscillation test, and that is why the first run spiraled out. For the upwind flux with forward Euler and ``C \le 1``, the matrix ``A`` has no negative entries and its columns add up to 1, which makes it a Markov matrix.
-"""
-
-# ╔═╡ 7649806a-f858-4357-933d-7724a098be72
-details("Where do these shapes come from?", md"""
-The eigenvectors of ``A`` are the waves ``c_j = e^{i k x_j}``, the Fourier modes from 18.03. Put one of them into the scheme and it comes out multiplied by a number, which is the eigenvalue.
-
-For the centered flux with forward Euler:
-
-```math
-\lambda_k = 1 - \frac{C}{2}\left(e^{ik\Delta x} - e^{-ik\Delta x}\right) = 1 - i\,C\sin(k\Delta x), \qquad |\lambda_k|^2 = 1 + C^2\sin^2(k\Delta x) \ge 1 .
-```
-
-For the upwind flux with forward Euler:
-
-```math
-\lambda_k = 1 - C\left(1 - e^{-ik\Delta x}\right) = (1 - C) + C\,e^{-ik\Delta x} ,
-```
-
-a circle of radius ``C`` centered at ``1 - C``.
-
-This calculation is called **von Neumann stability analysis**.
-""")
 
 # ╔═╡ 88758f9f-4599-4300-8ce1-c713f4d36955
 md"""
 #### What the limit costs
 
-The time step must shrink with the grid spacing: ``\Delta t \le \Delta x / a``. Suppose you halve the grid spacing of a three-dimensional model to see finer detail. You get ``2 \times 2 \times 2 = 8`` times as many cells, and you need twice as many time steps. The cost goes up 16 times.
+A better time stepper raises ``C_\text{max}``, but the time step must still shrink with the grid spacing: ``\Delta t \le C_\text{max}\,\Delta x / a``. Suppose you halve the grid spacing of a three-dimensional model to see finer detail. You get ``2 \times 2 \times 2 = 8`` times as many cells, and you need twice as many time steps. The cost goes up 16 times.
 
 In a real model, ``a`` is the fastest signal of any kind: the fastest wind or current, or the fastest wave. This is the main reason that climate models, which must run for centuries, use cells that are tens of kilometers wide.
 """
@@ -1058,15 +1081,23 @@ end
 begin
     struct WENOFlux end
 
+    # c₃ is the upwind cell of the face, c₄ the downwind cell
     function weno_face_value(c₁, c₂, c₃, c₄, c₅)
+        # three estimates of the face value, each from a parabola through three cells
         q₁ = (2c₁ - 7c₂ + 11c₃) / 6
         q₂ = (-c₂ + 5c₃ + 2c₄) / 6
         q₃ = (2c₃ + 5c₄ - c₅) / 6
+
+        # how rough the data is in each group: about equal where the data is smooth, large across a jump
         β₁ = 13//12 * (c₁ - 2c₂ + c₃)^2 + 1//4 * (c₁ - 4c₂ + 3c₃)^2
         β₂ = 13//12 * (c₂ - 2c₃ + c₄)^2 + 1//4 * (c₂ - c₄)^2
         β₃ = 13//12 * (c₃ - 2c₄ + c₅)^2 + 1//4 * (3c₃ - 4c₄ + c₅)^2
+
+        # weights: 1/10, 6/10, 3/10 give fifth order when the data is smooth,
+        # and dividing by the roughness shuts off any group that contains a jump
         ε = oftype(c₃, 1e-6)
         w₁, w₂, w₃ = 1//10 / (ε + β₁)^2, 6//10 / (ε + β₂)^2, 3//10 / (ε + β₃)^2
+
         return (w₁ * q₁ + w₂ * q₂ + w₃ * q₃) / (w₁ + w₂ + w₃)
     end
 
@@ -1080,7 +1111,7 @@ end
 
 # ╔═╡ b861c7bb-b662-4ddd-9bce-3385bde2ca54
 md"""
-Run the flow from the start of the notebook, ``u_0(x) = 1 + \frac{1}{2}\sin x``, with three methods. The fastest parcel moves at 1.5, so the time step is ``\Delta t = C\,\Delta x / 1.5``.
+Run the flow from the start of the notebook, ``u_0(x) = 1 + \frac{1}{2}\sin x``, with four methods. The fastest parcel moves at 1.5, so the time step is ``\Delta t = C\,\Delta x / 1.5``.
 """
 
 # ╔═╡ ac62481e-fde7-4345-9214-97046d49ec27
@@ -1100,15 +1131,16 @@ end
 
 # ╔═╡ e6c40bdb-afb8-414b-ad8f-65f988bd92d5
 md"""
-Before ``t = 2`` the solution is smooth and all three methods agree with the exact solution. Any reasonable scheme works while the solution is smooth. At ``t = 2`` the shock forms, and the methods part.
+Before ``t = 2`` the solution is smooth and all four methods agree with the exact solution. Any reasonable scheme works while the solution is smooth. At ``t = 2`` the shock forms, and the methods part.
 
 | method | after the shock forms |
 |:--|:--|
 | centered + forward Euler | blows up within a short time |
-| centered + RK3 | survives, but overshoots to 2, when no parcel ever had a velocity above 1.5, and leaves noise at the scale of the grid behind the shock |
+| centered + RK4 | survives, but overshoots above 2, when no parcel ever had a velocity above 1.5, and leaves noise at the scale of the grid behind the shock |
 | upwind + forward Euler | gives a clean jump that stays within the range of the initial data, at the right place (the dotted line) and moving at the right speed |
+| WENO + RK4 | gives a jump as clean as upwind, but sharper: about one cell wide, against three or four for upwind |
 
-First-order upwind does well here because a shock steepens itself, which works against the smearing. Of the sharper schemes, third-order upwind overshoots to 1.7 at the shock, and WENO gives a jump as clean as that of first-order upwind.
+First-order upwind does well here because a shock steepens itself, which works against the smearing. Third-order upwind, which isn't shown, overshoots to 1.7 at the shock. WENO keeps the sharpness of a high-order scheme without its overshoots, because near the shock it reads only the cells on the smooth side.
 
 The trouble starts when the flow makes a feature smaller than a grid cell, and real flows always do. The smallest swirls in the atmosphere are about a millimeter across, while the cells of a climate model are tens of kilometers wide, a gap that no computer will close. A model of the atmosphere or the ocean therefore has to give a sensible answer when the flow has features that the grid can't hold, and the advection scheme decides whether it does.
 """
@@ -1170,136 +1202,6 @@ function tendency!(dc, c, eq, scheme, Δx)
     return dc
 end
 
-# ╔═╡ 61c05b91-c56d-4373-927e-4da6881ca2be
-centered_euler = let
-    Δt = courant_centered * Δx / a
-    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), CenteredFlux(), Δx)
-    simulate(c₀, G!, ForwardEuler(); Δt, stop_time = 1)
-end;
-
-# ╔═╡ 652c59a9-0fb1-4d74-bf75-cf6688ee45fe
-let run = centered_euler
-    c = state_at(run, time_centered)
-    amplitude = maximum(abs, c)
-    fig = Figure(size = (800, 640))
-    ax1 = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -1, 2),
-               title = "Centered flux + forward Euler, C = $courant_centered, t = $time_centered: largest |c| = $(tidy(amplitude))")
-    draw_profiles!(ax1, x, [(label = "centered + forward Euler", values = c, color = scheme_colors.centered)];
-                   exact = exact_tracer(time_centered))
-    legend_below!(fig[2, 1], ax1)
-
-    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "largest |c|", yscale = log10, limits = (0, 1, 0.5, 1e9))
-    lines!(ax2, run.times, maximum.(abs, run.states), color = scheme_colors.centered)
-    vlines!(ax2, time_centered, color = :gray40, linestyle = :dash)
-    rowsize!(fig.layout, 3, Relative(0.28))
-    fig
-end
-
-# ╔═╡ cd2ec92c-6e1f-462a-b585-2598b3c42155
-sum(centered_euler.states[end]) * Δx - sum(c₀) * Δx
-
-# ╔═╡ 28b9a1be-96ca-40f7-8bc2-4e9cf3994fe6
-centered_rk3 = let
-    Δt = 0.5 * Δx / a
-    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), CenteredFlux(), Δx)
-    simulate(c₀, G!, RK3(); Δt, stop_time = 3)
-end;
-
-# ╔═╡ c003091a-8a14-4a9d-898a-86cd27fa926d
-let
-    c = state_at(centered_rk3, time_rk3)
-    fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6),
-              title = "Centered flux + RK3, C = 0.5, t = $time_rk3: c between $(round(minimum(c), digits = 2)) and $(round(maximum(c), digits = 2))")
-    draw_profiles!(ax, x, [(label = "centered + RK3", values = c, color = scheme_colors.centered, linestyle = :dash)];
-                   exact = exact_tracer(time_rk3))
-    legend_below!(fig[2, 1], ax)
-    fig
-end
-
-# ╔═╡ b195ea93-3a9d-4607-b8e5-6d0c7ffdb8fe
-upwind_euler = let
-    Δt = courant_upwind * Δx / a
-    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), UpwindFlux(), Δx)
-    simulate(c₀, G!, ForwardEuler(); Δt, stop_time = 3)
-end;
-
-# ╔═╡ 18a73da5-75cc-4d8d-848d-bcba85bc16cc
-let
-    c = state_at(upwind_euler, time_upwind)
-    fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6),
-              title = "Upwind flux + forward Euler, C = $courant_upwind, t = $time_upwind: c between $(tidy(minimum(c))) and $(tidy(maximum(c)))")
-    draw_profiles!(ax, x, [(label = "upwind + forward Euler", values = c, color = scheme_colors.upwind)];
-                   exact = exact_tracer(time_upwind))
-    legend_below!(fig[2, 1], ax)
-    fig
-end
-
-# ╔═╡ a192d708-a790-4902-86cb-7ebb9d110a48
-let
-    upwind = let
-        G!(dc, c) = tendency!(dc, c, LinearAdvection(a), UpwindFlux(), Δx)
-        simulate(c₀, G!, ForwardEuler(); Δt = 0.5 * Δx / a, stop_time = 1)
-    end
-    fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After one trip around the domain (C = 0.5)")
-    draw_profiles!(ax, x, [(label = "centered + RK3", values = state_at(centered_rk3, 1), color = scheme_colors.centered, linestyle = :dash),
-                           (label = "upwind + forward Euler", values = upwind.states[end], color = scheme_colors.upwind)];
-                   exact = exact_tracer(1))
-    legend_below!(fig[2, 1], ax)
-    fig
-end
-
-# ╔═╡ 63038188-e602-45f8-a355-3faeca092ad7
-function advect(N, scheme, stepper; trips = 1)
-    Δx = 1 / N
-    x = Δx/2:Δx:1
-    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), scheme, Δx)
-    run = simulate(initial_tracer.(x), G!, stepper; Δt = 0.5 * Δx / a, stop_time = trips)
-    return (; x, c = run.states[end])
-end
-
-# ╔═╡ b11a6e32-8568-41b3-b071-082f36aa33c8
-let N = fine_cell_count
-    (; x, c) = advect(N, UpwindFlux(), ForwardEuler())
-    kept = round(Int, 100 * maximum(c[x .< 0.5]))
-    fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6),
-              title = "First-order upwind, $N cells, one trip: the bump keeps $kept% of its height, for $((N ÷ 100)^2) × the work")
-    draw_profiles!(ax, x, [(label = "upwind + forward Euler", values = c, color = scheme_colors.upwind)]; exact = exact_tracer(1))
-    legend_below!(fig[2, 1], ax)
-    fig
-end
-
-# ╔═╡ 57f29cd6-c8af-49cf-8d78-3882f0f353a3
-let
-    first_order = advect(N, UpwindFlux(), ForwardEuler())
-    third_order = advect(N, UpwindThirdOrder(), RK3())
-    fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "$N cells, after one trip around the domain (C = 0.5)")
-    draw_profiles!(ax, x, [(label = "upwind + forward Euler", values = first_order.c, color = scheme_colors.upwind),
-                           (label = "third-order upwind + RK3", values = third_order.c, color = scheme_colors.third_order, linestyle = :dash)];
-                   exact = exact_tracer(1))
-    legend_below!(fig[2, 1], ax)
-    fig
-end
-
-# ╔═╡ 947d749e-1847-4d8b-92ca-9be2f25ec1cd
-let
-    third_order = advect(N, UpwindThirdOrder(), RK3())
-    weno = advect(N, WENOFlux(), RK3())
-    range_of(c) = "$(round(minimum(c), digits = 2) + 0.0) to $(round(maximum(c), digits = 2))"
-    fig = Figure(size = (800, 410))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6),
-              title = "After one trip: third-order upwind from $(range_of(third_order.c)), WENO from $(range_of(weno.c))")
-    draw_profiles!(ax, x, [(label = "third-order upwind + RK3", values = third_order.c, color = scheme_colors.third_order),
-                           (label = "WENO + RK3", values = weno.c, color = scheme_colors.weno)];
-                   exact = exact_tracer(1))
-    legend_below!(fig[2, 1], ax)
-    fig
-end
-
 # ╔═╡ d0ca6d74-be30-4ec1-8aeb-88fe0fd2a444
 function tendency_matrix(scheme, N)
     L = zeros(N, N)
@@ -1312,109 +1214,6 @@ function tendency_matrix(scheme, N)
     return L
 end
 
-# ╔═╡ 8c734e9a-af1f-4a95-8df6-07999529b0ea
-function step_matrix(method, C; N = 40)
-    scheme = startswith(method, "centered") ? CenteredFlux() :
-             startswith(method, "upwind") ? UpwindFlux() : UpwindThirdOrder()
-    M = (C / N) * tendency_matrix(scheme, N)   # Δt × tendency matrix, for Δx = 1/N and a = 1
-    endswith(method, "forward Euler") && return I + M
-    endswith(method, "RK3") && return I + M + M^2 / 2 + M^3 / 6
-    return inv(I - M)                          # backward Euler
-end
-
-# ╔═╡ 22910abe-d941-48a0-b4c6-2a6be24b6f5d
-let
-    λ = eigvals(step_matrix(time_step_method, courant_eigenvalues))
-    largest = maximum(abs, λ)
-    unstable = abs.(λ) .> 1 + 1e-9
-    fig = Figure(size = (620, 560))
-    ax = Axis(fig[1, 1], xlabel = "Re λ", ylabel = "Im λ", aspect = DataAspect(), limits = (-2.2, 2.2, -2.2, 2.2),
-              title = "$time_step_method, C = $courant_eigenvalues\nlargest |λ| = $(round(largest, digits = 3)), after 200 steps: × $(round(largest^200, sigdigits = 2))")
-    lines!(ax, cos.(0:0.01:2π), sin.(0:0.01:2π), color = :black)
-    scatter!(ax, real.(λ), imag.(λ), color = ifelse.(unstable, :firebrick, :seagreen), markersize = 9)
-    fig
-end
-
-# ╔═╡ 9feb44a6-a77c-4c49-bf8d-c23190f01678
-burgers = let
-    N = 200
-    Δx = 2π / N
-    x = Δx/2:Δx:2π
-    Δt = 0.5 * Δx / 1.5
-    run(scheme, stepper) = simulate(u₀.(x), (du, u) -> tendency!(du, u, Burgers(), scheme, Δx), stepper; Δt, stop_time = 6)
-
-    (; x, Δx,
-       upwind_euler = run(UpwindFlux(), ForwardEuler()),
-       centered_rk3 = run(CenteredFlux(), RK3()),
-       centered_euler = run(CenteredFlux(), ForwardEuler()))
-end;
-
-# ╔═╡ d73085ca-0234-411c-8a01-b550084b7895
-let t = time_burgers
-    (; x, upwind_euler, centered_rk3, centered_euler) = burgers
-    first_nonfinite = findfirst(u -> !all(isfinite, u), centered_euler.states)
-    blown_up = !isnothing(first_nonfinite) && centered_euler.times[first_nonfinite] ≤ t
-    curves = [(label = "centered + forward Euler", values = blown_up ? fill(NaN, length(x)) : state_at(centered_euler, t), color = :gray50),
-              (label = "centered + RK3", values = state_at(centered_rk3, t), color = scheme_colors.centered, linestyle = :dash),
-              (label = "upwind + forward Euler", values = state_at(upwind_euler, t), color = scheme_colors.upwind)]
-
-    fig = Figure(size = (800, 660))
-    title = "Burgers equation, t = $t" * (blown_up ? ". Centered + forward Euler blew up at t = $(round(centered_euler.times[first_nonfinite], digits = 2))" : "")
-    ax1 = Axis(fig[1, 1]; xlabel = "x", ylabel = "u", limits = (0, 2π, 0.2, 2.3), title,
-               xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]))
-    t ≥ 2 && vlines!(ax1, mod(π + t, 2π), color = :gray40, linestyle = :dot)
-    draw_profiles!(ax1, x, curves; exact = burgers_exact(t))
-    legend_below!(fig[2, 1], ax1)
-
-    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "largest u", limits = (0, 6, 1.3, 2.5))
-    lines!(ax2, centered_euler.times, maximum.(centered_euler.states), color = :gray50)
-    lines!(ax2, centered_rk3.times, maximum.(centered_rk3.states), color = scheme_colors.centered, linestyle = :dash)
-    lines!(ax2, upwind_euler.times, maximum.(upwind_euler.states), color = scheme_colors.upwind)
-    vlines!(ax2, t, color = :gray40, linestyle = :dash)
-    rowsize!(fig.layout, 3, Relative(0.25))
-    fig
-end
-
-# ╔═╡ 3e601fe9-9eed-40fb-8e86-14b218286b44
-two_forms = let
-    (; x, Δx) = burgers
-    Δt = 0.5 * Δx / 1.5
-    (flux_form = simulate(u₀.(x), (du, u) -> tendency!(du, u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt, stop_time = 10),
-     advective_form = simulate(u₀.(x), (du, u) -> advective_tendency!(du, u, Δx), ForwardEuler(); Δt, stop_time = 10))
-end;
-
-# ╔═╡ 7ce90062-0426-454f-b160-7e62c963b1e4
-let t = time_forms
-    (; x, Δx) = burgers
-    (; flux_form, advective_form) = two_forms
-    vermillion = Makie.wong_colors()[6]
-    fig = Figure(size = (800, 660))
-    ax1 = Axis(fig[1, 1], xlabel = "x", ylabel = "u", limits = (0, 2π, 0.4, 1.6), title = "Two upwind schemes for the Burgers equation, t = $t",
-               xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]))
-    t ≥ 2 && vlines!(ax1, mod(π + t, 2π), color = :gray40, linestyle = :dot)
-    draw_profiles!(ax1, x, [(label = "flux form", values = state_at(flux_form, t), color = scheme_colors.upwind),
-                            (label = "advective form", values = state_at(advective_form, t), color = vermillion)];
-                   exact = burgers_exact(t))
-    legend_below!(fig[2, 1], ax1)
-
-    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "total / initial total", limits = (0, 10, 0.9, 1.02))
-    total(run) = [sum(u) * Δx for u in run.states] ./ (sum(run.states[1]) * Δx)
-    lines!(ax2, flux_form.times, total(flux_form), color = scheme_colors.upwind)
-    lines!(ax2, advective_form.times, total(advective_form), color = vermillion)
-    vlines!(ax2, t, color = :gray40, linestyle = :dash)
-    rowsize!(fig.layout, 3, Relative(0.25))
-    fig
-end
-
-# ╔═╡ 6388e1dd-b7ad-46a8-9104-526a3c9c7c7c
-md"""
-Both solutions are smooth and stable, and without the exact solution you couldn't tell from the picture which one is wrong. In the advective form the shock moves too slowly and the total amount of ``u`` leaks away: $(round(100 * (1 - sum(two_forms.advective_form.states[end]) / sum(two_forms.advective_form.states[1])), digits = 1))% is gone at ``t = 10``. A finer grid leaves the error in the position of the shock unchanged.
-
-In the flux form, what leaves one cell enters the next, so the total is exact, and an exact total forces the shock to move at the right speed. A climate model runs for centuries and must not lose or create heat, salt or water along the way, which is why ocean and atmosphere models are built on fluxes through the faces of cells.
-
-The next notebook, `ocean_planet.jl`, runs a model of a global ocean with [Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl). Its script makes the same choices as this solver: a grid of cells, a flux at the faces, a time stepper and a time step.
-"""
-
 # ╔═╡ 05f57e2a-21a3-40a6-96e7-4cb086df7ee7
 details("Hint", md"""
 The flux is the `flux` of the face value:
@@ -1426,22 +1225,6 @@ end
 ```
 """)
 
-# ╔═╡ 0099469c-4c36-45a6-999e-e2f58368bd38
-if ismissing(face_flux(LinearAdvection(a), c₀, 1, UpwindFifthOrder()))
-    md"Write `face_flux` for `UpwindFifthOrder` to see the plot."
-else
-    let
-        fig = Figure(size = (800, 410))
-        ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After ten trips around the domain (C = 0.5)")
-        draw_profiles!(ax, x, [(label = "third-order upwind + RK3", values = advect(N, UpwindThirdOrder(), RK3(); trips = 10).c, color = scheme_colors.third_order),
-                               (label = "fifth-order upwind + RK3", values = advect(N, UpwindFifthOrder(), RK3(); trips = 10).c, color = Makie.wong_colors()[6]),
-                               (label = "WENO + RK3", values = advect(N, WENOFlux(), RK3(); trips = 10).c, color = scheme_colors.weno)];
-                       exact = exact_tracer(10))
-        legend_below!(fig[2, 1], ax)
-        fig
-    end
-end
-
 # ╔═╡ 791bec76-e199-4883-a0c1-f8c8fba38a22
 md"""
 How much of the bump does each scheme keep after ten trips? Does the higher order remove the wiggles at the edges of the top hat? WENO reads the same five cells as your scheme.
@@ -1451,29 +1234,10 @@ How much of the bump does each scheme keep after ten trips? Does the higher orde
 Solve the Burgers equation with ``u_0(x) = \sin x``. The flow is to the right in one half of the domain and to the left in the other half. Before you run it: where does the shock form, and how fast does it move?
 """
 
-# ╔═╡ ab84215c-7bd0-4844-992d-eb2cabf98089
-sign_change = let
-    N = 200
-    Δx = 2π / N
-    x = Δx/2:Δx:2π
-    run = simulate(sin.(x), (du, u) -> tendency!(du, u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt = 0.5 * Δx, stop_time = 3)
-    (; x, run)
-end;
-
 # ╔═╡ 0c825e83-6859-4dad-9763-f6c3dec95d9e
 md"""
 **Time:** $(@bind time_sign_change Slider(0:0.1:3, default = 0, show_value = true))
 """
-
-# ╔═╡ 6e6d532c-d6ce-485c-97e9-ef75102d35c6
-let
-    fig = Figure(size = (800, 340))
-    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "u", limits = (0, 2π, -1.2, 1.2), title = "Burgers equation with u₀ = sin x, t = $time_sign_change",
-              xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]))
-    hlines!(ax, 0, color = :gray70)
-    draw_profiles!(ax, sign_change.x, [(label = "upwind + forward Euler", values = state_at(sign_change.run, time_sign_change), color = scheme_colors.upwind)])
-    fig
-end
 
 # ╔═╡ e4efa161-4d66-428b-86c1-e5f17491d3a9
 details("Hint", md"""
@@ -1513,9 +1277,9 @@ else
         Ns = [25, 50, 100, 200, 400]
         fig = Figure(size = (700, 480))
         ax = Axis(fig[1, 1], xlabel = "number of cells N", ylabel = "mean error", xscale = log10, yscale = log10, xticks = Ns)
-        scatterlines!(ax, Ns, [bump_error(N, UpwindFlux(), ForwardEuler()) for N in Ns], color = scheme_colors.upwind, label = "upwind + forward Euler")
-        scatterlines!(ax, Ns, [bump_error(N, CenteredFlux(), RK3()) for N in Ns], color = scheme_colors.centered, label = "centered + RK3")
-        scatterlines!(ax, Ns, [bump_error(N, UpwindThirdOrder(), RK3()) for N in Ns], color = scheme_colors.third_order, label = "third-order upwind + RK3")
+        scatterlines!(ax, Ns, [bump_error(N, UpwindFlux(), ForwardEuler()) for N in Ns], color = scheme_colors.upwind, linewidth = 3, label = "upwind + forward Euler")
+        scatterlines!(ax, Ns, [bump_error(N, CenteredFlux(), RK4()) for N in Ns], color = scheme_colors.centered, linewidth = 3, label = "centered + RK4")
+        scatterlines!(ax, Ns, [bump_error(N, UpwindThirdOrder(), RK4()) for N in Ns], color = scheme_colors.third_order, linewidth = 3, label = "third-order upwind + RK4")
         lines!(ax, Ns, 5 ./ Ns, color = :gray50, linestyle = :dot, label = "∝ 1/N")
         lines!(ax, Ns, 120 ./ Ns .^ 2, color = :gray50, linestyle = :dash, label = "∝ 1/N²")
         lines!(ax, Ns, 2500 ./ Ns .^ 3, color = :gray50, linestyle = :dashdot, label = "∝ 1/N³")
@@ -1529,11 +1293,114 @@ md"""
 When you double the number of cells, by what factor does the error of each scheme fall? A first-order scheme approaches a factor of 2, a second-order scheme 4 and a third-order scheme 8, which is where the names come from.
 """
 
+# ╔═╡ dcf627f3-679b-42b3-9778-1a4d91ee4466
+md"""
+### 4. Stability limits from eigenvalues
+
+The tendency is linear in ``c``, so one time step is a matrix multiplication:
+
+```math
+c^{n+1} = A\,c^{n}, \qquad\text{and after } n \text{ steps}\qquad c^{n} = A^n\,c^{0} .
+```
+
+From 18.06: powers of a matrix grow if any eigenvalue has ``|\lambda| > 1``, and stay bounded if all of them are inside or on the unit circle.
+
+We can build the tendency matrix ``L`` without any algebra: column ``j`` is the tendency of a vector that is 1 in cell ``j`` and 0 elsewhere, which is what `tendency_matrix` does. With ``M = \Delta t\,L``, forward Euler is ``A = I + M``, and backward Euler is ``A = (I - M)^{-1}``. For a linear tendency, the four stages of RK4 combine into
+
+```math
+A = I + M + \frac{M^2}{2} + \frac{M^3}{6} + \frac{M^4}{24} .
+```
+
+Fill in the RK4 line of `step_matrix`. Then choose a method and move the Courant number to find the largest ``C`` at which no eigenvalue leaves the unit circle. Do the limits agree with the runs earlier in the notebook?
+"""
+
+# ╔═╡ 9263cd30-3845-4f75-a722-ccc8d7e9f851
+function step_matrix(method, C; N = 40)
+    scheme = startswith(method, "centered") ? CenteredFlux() :
+             startswith(method, "upwind") ? UpwindFlux() : UpwindThirdOrder()
+    M = (C / N) * tendency_matrix(scheme, N)   # Δt × tendency matrix, for Δx = 1/N and a = 1
+    endswith(method, "forward Euler") && return I + M
+    endswith(method, "RK4") && return missing # YOUR CODE HERE
+    return inv(I - M)                          # backward Euler
+end
+
+# ╔═╡ bb37d67c-e1f2-44e1-b239-df5e97da81f3
+details("Hint", md"""
+```julia
+endswith(method, "RK4") && return I + M + M^2 / 2 + M^3 / 6 + M^4 / 24
+```
+""")
+
+# ╔═╡ be5f2358-11b0-4af9-ad57-3f21d9abe82b
+md"""
+**Method:** $(@bind time_step_method Select(["centered + forward Euler", "upwind + forward Euler", "centered + RK4", "third-order upwind + forward Euler", "third-order upwind + RK4", "centered + backward Euler"]))
+
+**Courant number:** $(@bind courant_eigenvalues Slider(0.1:0.1:3, default = 0.5, show_value = true))
+"""
+
+# ╔═╡ 598533b7-43a9-46e7-b159-1891ba42b638
+if ismissing(step_matrix(time_step_method, courant_eigenvalues))
+    md"Fill in the RK4 line of `step_matrix` to see this method."
+else
+    let
+        λ = eigvals(step_matrix(time_step_method, courant_eigenvalues))
+        largest = maximum(abs, λ)
+        unstable = abs.(λ) .> 1 + 1e-9
+        fig = Figure(size = (620, 560))
+        ax = Axis(fig[1, 1], xlabel = "Re λ", ylabel = "Im λ", aspect = DataAspect(), limits = (-2.2, 2.2, -2.2, 2.2),
+                  title = "$time_step_method, C = $courant_eigenvalues\nlargest |λ| = $(round(largest, digits = 3)), after 200 steps: × $(round(largest^200, sigdigits = 2))")
+        lines!(ax, cos.(0:0.01:2π), sin.(0:0.01:2π), color = :black)
+        scatter!(ax, real.(λ), imag.(λ), color = ifelse.(unstable, :firebrick, :seagreen), markersize = 9)
+        fig
+    end
+end
+
+# ╔═╡ 127047cc-a51b-446c-8b15-10a3f0d1231b
+md"""
+Each dot is one eigenvalue of ``A``. Green dots are inside or on the unit circle. Red dots are outside, and each red dot is a pattern that grows at every step.
+"""
+
+# ╔═╡ 0726633a-2ab0-4118-a358-d93cf90e06d2
+details("Solution", md"""
+| method | where the eigenvalues lie | stable for |
+|:--|:--|:--|
+| centered + forward Euler | on a vertical line through 1 | no ``C`` |
+| upwind + forward Euler | on a circle of radius ``C`` centered at ``1 - C`` | ``C \le 1`` |
+| centered + RK4 | just inside the circle | ``C \le 2.8`` |
+| third-order upwind + forward Euler | on a loop that leaves the circle next to 1 | no ``C`` |
+| third-order upwind + RK4 | inside the circle | ``C \le 1.7`` |
+| centered + backward Euler | inside or on the circle | every ``C`` |
+
+These match the runs: centered + forward Euler blew up at every ``C``, upwind + forward Euler blew up above ``C = 1``, and centered + RK4 blew up between ``C = 2.8`` and ``2.9``. For upwind with forward Euler and ``C \le 1``, the matrix ``A`` has no negative entries and its columns add up to 1, which makes it a Markov matrix.
+
+The shapes come from the eigenvectors of ``A``, which are the waves ``c_j = e^{i k x_j}``, the Fourier modes from 18.03. Put one of them into the scheme and it comes out multiplied by a number, which is the eigenvalue. For the centered flux with forward Euler,
+
+```math
+\lambda_k = 1 - \frac{C}{2}\left(e^{ik\Delta x} - e^{-ik\Delta x}\right) = 1 - i\,C\sin(k\Delta x), \qquad |\lambda_k|^2 = 1 + C^2\sin^2(k\Delta x) \ge 1 ,
+```
+
+a vertical line through 1. For the upwind flux with forward Euler,
+
+```math
+\lambda_k = 1 - C\left(1 - e^{-ik\Delta x}\right) = (1 - C) + C\,e^{-ik\Delta x} ,
+```
+
+a circle of radius ``C`` centered at ``1 - C``. For the centered flux with RK4, put ``z = -i\,C\sin(k\Delta x)`` into ``1 + z + z^2/2 + z^3/6 + z^4/24``. For imaginary ``z = iy``,
+
+```math
+|\lambda|^2 = 1 - \frac{y^6}{72} + \frac{y^8}{576} ,
+```
+
+which is at most 1 when ``|y| \le 2\sqrt{2}``. The largest ``|y|`` is ``C``, so the limit is ``C \le 2\sqrt{2} \approx 2.83``.
+
+This calculation is called **von Neumann stability analysis**.
+""")
+
 # ╔═╡ c5c0863f-a83f-44b4-9c42-0cb758b77d5e
 md"""
 ## Optional: a time stepper with no limit
 
-Forward Euler computes the tendency at the old time. **Backward Euler** computes it at the new time:
+forward Euler computes the tendency at the old time. **Backward Euler** computes it at the new time:
 
 ```math
 c^{n+1} = c^{n} + \Delta t\,G(c^{n+1}) .
@@ -1545,29 +1412,329 @@ The unknown is on both sides. For linear advection the tendency is a matrix, ``G
 (I - \Delta t\,L)\,c^{n+1} = c^{n} .
 ```
 
+The WENO tendency is not linear in ``c``, so with WENO each step solves a nonlinear system. The stepper below does this with Newton's method: it builds the matrix of derivatives of the tendency one column at a time, solves a linear system like the one above, and repeats until the answer stops changing. For the linear fluxes it is done after one iteration.
+
 **Courant number:** $(@bind courant_backward Slider([0.5, 1, 2, 5, 10], default = 5, show_value = true))
 """
 
+# ╔═╡ fb2e1203-a9ca-4a84-8c8c-47a25f1af60b
+begin
+    struct BackwardEuler end
+
+    allocate_workspace(::BackwardEuler, c) = (; cⁿ = similar(c), G = similar(c), Gᵖ = similar(c), cᵖ = similar(c),
+                                               J = zeros(eltype(c), length(c), length(c)))
+
+    # Newton's method for c - Δt G(c) = cⁿ
+    function advance!(c, Δt, G!, ::BackwardEuler, workspace)
+        (; cⁿ, G, Gᵖ, cᵖ, J) = workspace
+        cⁿ .= c
+        for iteration in 1:20
+            G!(G, c)
+            residual = c .- Δt .* G .- cⁿ
+            maximum(abs, residual) < 1e-10 && break
+            for j in eachindex(c)   # column j of the Jacobian: how G changes when c[j] is nudged
+                h = 1e-7
+                cᵖ .= c
+                cᵖ[j] += h
+                G!(Gᵖ, cᵖ)
+                @. J[:, j] = (Gᵖ - G) / h
+            end
+            c .-= (I - Δt * J) \ residual
+        end
+        return c
+    end
+end
+
+# ╔═╡ 149f84fd-935e-4089-9c49-0a663368d586
+function simulate(c₀, G!, stepper; Δt, stop_time)
+    nsteps = round(Int, stop_time / Δt)
+    Δt = convert(eltype(c₀), Δt)
+    times  = [n * Δt for n in 0:nsteps]
+    states = [similar(c₀) for n in 0:nsteps]
+    c = copy(c₀)
+    workspace = allocate_workspace(stepper, c)
+    states[1] .= c
+    for n in 1:nsteps
+        advance!(c, Δt, G!, stepper, workspace)
+        states[n + 1] .= c
+    end
+    return (; times, states)
+end
+
+# ╔═╡ 61c05b91-c56d-4373-927e-4da6881ca2be
+centered_euler = let
+    Δt = courant_centered * Δx / a
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), CenteredFlux(), Δx)
+    simulate(c₀, G!, ForwardEuler(); Δt, stop_time = 1)
+end;
+
+# ╔═╡ 652c59a9-0fb1-4d74-bf75-cf6688ee45fe
+let run = centered_euler
+    c = state_at(run, time_centered)
+    errors = l2_error.(run.states, run.times)
+    fig = Figure(size = (800, 640))
+    ax1 = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -1, 2),
+               title = "Centered flux + forward Euler, C = $courant_centered, t = $time_centered: L² error = $(tidy(l2_error(c, time_centered)))")
+    lines!(ax1, exact_tracer(time_centered)..., color = :black, linewidth = 2, label = "exact")
+    lines!(ax1, x, c, color = scheme_colors.centered, linewidth = 3, label = "centered + forward Euler")
+    legend_below!(fig[2, 1], ax1)
+
+    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "L² error", yscale = log10, limits = (0, 1, nothing, nothing))
+    lines!(ax2, run.times[2:end], errors[2:end], color = scheme_colors.centered, linewidth = 3)
+    vlines!(ax2, time_centered, color = :gray40, linestyle = :dash, linewidth = 2)
+    rowsize!(fig.layout, 3, Relative(0.28))
+    fig
+end
+
+# ╔═╡ cd2ec92c-6e1f-462a-b585-2598b3c42155
+sum(centered_euler.states[end]) * Δx - sum(c₀) * Δx
+
+# ╔═╡ 28b9a1be-96ca-40f7-8bc2-4e9cf3994fe6
+centered_rk4 = let
+    Δt = courant_rk4 * Δx / a
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), CenteredFlux(), Δx)
+    simulate(c₀, G!, RK4(); Δt, stop_time = 3)
+end;
+
+# ╔═╡ c003091a-8a14-4a9d-898a-86cd27fa926d
+let run = centered_rk4
+    c = state_at(run, time_rk4)
+    errors = l2_error.(run.states, run.times)
+    fig = Figure(size = (800, 640))
+    ax1 = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -1, 2),
+               title = "Centered flux + RK4, C = $courant_rk4, t = $time_rk4: L² error = $(tidy(l2_error(c, time_rk4)))")
+    lines!(ax1, exact_tracer(time_rk4)..., color = :black, linewidth = 2, label = "exact")
+    lines!(ax1, x, c, color = scheme_colors.centered, linewidth = 3, label = "centered + RK4")
+    legend_below!(fig[2, 1], ax1)
+
+    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "L² error", yscale = log10, limits = (0, 3, nothing, nothing))
+    lines!(ax2, run.times[2:end], errors[2:end], color = scheme_colors.centered, linewidth = 3)
+    vlines!(ax2, time_rk4, color = :gray40, linestyle = :dash, linewidth = 2)
+    rowsize!(fig.layout, 3, Relative(0.28))
+    fig
+end
+
+# ╔═╡ b195ea93-3a9d-4607-b8e5-6d0c7ffdb8fe
+upwind_euler = let
+    Δt = courant_upwind * Δx / a
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), UpwindFlux(), Δx)
+    simulate(c₀, G!, ForwardEuler(); Δt, stop_time = 3)
+end;
+
+# ╔═╡ 18a73da5-75cc-4d8d-848d-bcba85bc16cc
+let run = upwind_euler
+    c = state_at(run, time_upwind)
+    errors = l2_error.(run.states, run.times)
+    fig = Figure(size = (800, 640))
+    ax1 = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -1, 2),
+               title = "Upwind flux + forward Euler, C = $courant_upwind, t = $time_upwind: L² error = $(tidy(l2_error(c, time_upwind)))")
+    lines!(ax1, exact_tracer(time_upwind)..., color = :black, linewidth = 2, label = "exact")
+    lines!(ax1, x, c, color = scheme_colors.upwind, linewidth = 3, label = "upwind + forward Euler")
+    legend_below!(fig[2, 1], ax1)
+
+    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "L² error", yscale = log10, limits = (0, 3, nothing, nothing))
+    lines!(ax2, run.times[2:end], errors[2:end], color = scheme_colors.upwind, linewidth = 3)
+    vlines!(ax2, time_upwind, color = :gray40, linestyle = :dash, linewidth = 2)
+    rowsize!(fig.layout, 3, Relative(0.28))
+    fig
+end
+
+# ╔═╡ a192d708-a790-4902-86cb-7ebb9d110a48
+let
+    one_trip(scheme, stepper) = simulate(c₀, (dc, c) -> tendency!(dc, c, LinearAdvection(a), scheme, Δx), stepper; Δt = 0.5 * Δx / a, stop_time = 1).states[end]
+    fig = Figure(size = (800, 410))
+    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After one trip around the domain (C = 0.5)")
+    draw_profiles!(ax, x, [(label = "centered + RK4", values = one_trip(CenteredFlux(), RK4()), color = scheme_colors.centered, linestyle = :dash),
+                           (label = "upwind + forward Euler", values = one_trip(UpwindFlux(), ForwardEuler()), color = scheme_colors.upwind)];
+                   exact = exact_tracer(1))
+    legend_below!(fig[2, 1], ax)
+    fig
+end
+
+# ╔═╡ 63038188-e602-45f8-a355-3faeca092ad7
+function advect(N, scheme, stepper; trips = 1)
+    Δx = 1 / N
+    x = Δx/2:Δx:1
+    G!(dc, c) = tendency!(dc, c, LinearAdvection(a), scheme, Δx)
+    run = simulate(initial_tracer.(x), G!, stepper; Δt = 0.5 * Δx / a, stop_time = trips)
+    return (; x, c = run.states[end])
+end
+
+# ╔═╡ b11a6e32-8568-41b3-b071-082f36aa33c8
+let N = fine_cell_count
+    (; x, c) = advect(N, UpwindFlux(), ForwardEuler())
+    kept = round(Int, 100 * maximum(c[x .< 0.5]))
+    fig = Figure(size = (800, 410))
+    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6),
+              title = "First-order upwind, $N cells, one trip: the bump keeps $kept% of its height, for $((N ÷ 100)^2) × the work")
+    draw_profiles!(ax, x, [(label = "upwind + forward Euler", values = c, color = scheme_colors.upwind)]; exact = exact_tracer(1))
+    legend_below!(fig[2, 1], ax)
+    fig
+end
+
+# ╔═╡ 57f29cd6-c8af-49cf-8d78-3882f0f353a3
+let
+    first_order = advect(N, UpwindFlux(), ForwardEuler())
+    third_order = advect(N, UpwindThirdOrder(), RK4())
+    fig = Figure(size = (800, 410))
+    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "$N cells, after one trip around the domain (C = 0.5)")
+    draw_profiles!(ax, x, [(label = "upwind + forward Euler", values = first_order.c, color = scheme_colors.upwind),
+                           (label = "third-order upwind + RK4", values = third_order.c, color = scheme_colors.third_order, linestyle = :dash)];
+                   exact = exact_tracer(1))
+    legend_below!(fig[2, 1], ax)
+    fig
+end
+
+# ╔═╡ 947d749e-1847-4d8b-92ca-9be2f25ec1cd
+let
+    third_order = advect(N, UpwindThirdOrder(), RK4())
+    weno = advect(N, WENOFlux(), RK4())
+    range_of(c) = "$(round(minimum(c), digits = 2) + 0.0) to $(round(maximum(c), digits = 2))"
+    fig = Figure(size = (800, 410))
+    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6),
+              title = "After one trip: third-order upwind from $(range_of(third_order.c)), WENO from $(range_of(weno.c))")
+    draw_profiles!(ax, x, [(label = "third-order upwind + RK4", values = third_order.c, color = scheme_colors.third_order),
+                           (label = "WENO + RK4", values = weno.c, color = scheme_colors.weno)];
+                   exact = exact_tracer(1))
+    legend_below!(fig[2, 1], ax)
+    fig
+end
+
+# ╔═╡ 0099469c-4c36-45a6-999e-e2f58368bd38
+if ismissing(face_flux(LinearAdvection(a), c₀, 1, UpwindFifthOrder()))
+    md"Write `face_flux` for `UpwindFifthOrder` to see the plot."
+else
+    let
+        fig = Figure(size = (800, 410))
+        ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6), title = "After ten trips around the domain (C = 0.5)")
+        draw_profiles!(ax, x, [(label = "third-order upwind + RK4", values = advect(N, UpwindThirdOrder(), RK4(); trips = 10).c, color = scheme_colors.third_order),
+                               (label = "fifth-order upwind + RK4", values = advect(N, UpwindFifthOrder(), RK4(); trips = 10).c, color = Makie.wong_colors()[6]),
+                               (label = "WENO + RK4", values = advect(N, WENOFlux(), RK4(); trips = 10).c, color = scheme_colors.weno)];
+                       exact = exact_tracer(10))
+        legend_below!(fig[2, 1], ax)
+        fig
+    end
+end
+
+# ╔═╡ 9feb44a6-a77c-4c49-bf8d-c23190f01678
+burgers = let
+    N = 200
+    Δx = 2π / N
+    x = Δx/2:Δx:2π
+    Δt = 0.5 * Δx / 1.5
+    run(scheme, stepper) = simulate(u₀.(x), (du, u) -> tendency!(du, u, Burgers(), scheme, Δx), stepper; Δt, stop_time = 6)
+
+    (; x, Δx,
+       upwind_euler = run(UpwindFlux(), ForwardEuler()),
+       centered_rk4 = run(CenteredFlux(), RK4()),
+       centered_euler = run(CenteredFlux(), ForwardEuler()),
+       weno_rk4 = run(WENOFlux(), RK4()))
+end;
+
+# ╔═╡ d73085ca-0234-411c-8a01-b550084b7895
+let t = time_burgers
+    (; x, upwind_euler, centered_rk4, centered_euler, weno_rk4) = burgers
+    first_nonfinite = findfirst(u -> !all(isfinite, u), centered_euler.states)
+    blown_up = !isnothing(first_nonfinite) && centered_euler.times[first_nonfinite] ≤ t
+    curves = [(label = "centered + forward Euler", values = blown_up ? fill(NaN, length(x)) : state_at(centered_euler, t), color = :gray50),
+              (label = "centered + RK4", values = state_at(centered_rk4, t), color = scheme_colors.centered, linestyle = :dash),
+              (label = "upwind + forward Euler", values = state_at(upwind_euler, t), color = scheme_colors.upwind),
+              (label = "WENO + RK4", values = state_at(weno_rk4, t), color = scheme_colors.weno)]
+
+    fig = Figure(size = (800, 660))
+    title = "Burgers equation, t = $t" * (blown_up ? ". Centered + forward Euler blew up at t = $(round(centered_euler.times[first_nonfinite], digits = 2))" : "")
+    ax1 = Axis(fig[1, 1]; xlabel = "x", ylabel = "u", limits = (0, 2π, 0.2, 2.3), title,
+               xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]))
+    t ≥ 2 && vlines!(ax1, mod(π + t, 2π), color = :gray40, linestyle = :dot)
+    draw_profiles!(ax1, x, curves; exact = burgers_exact(t))
+    legend_below!(fig[2, 1], ax1)
+
+    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "largest u", limits = (0, 6, 1.3, 2.5))
+    lines!(ax2, centered_euler.times, maximum.(centered_euler.states), color = :gray50, linewidth = 3)
+    lines!(ax2, centered_rk4.times, maximum.(centered_rk4.states), color = scheme_colors.centered, linestyle = :dash, linewidth = 3)
+    lines!(ax2, upwind_euler.times, maximum.(upwind_euler.states), color = scheme_colors.upwind, linewidth = 3)
+    lines!(ax2, weno_rk4.times, maximum.(weno_rk4.states), color = scheme_colors.weno, linewidth = 3)
+    vlines!(ax2, t, color = :gray40, linestyle = :dash)
+    rowsize!(fig.layout, 3, Relative(0.25))
+    fig
+end
+
+# ╔═╡ 3e601fe9-9eed-40fb-8e86-14b218286b44
+two_forms = let
+    (; x, Δx) = burgers
+    Δt = 0.5 * Δx / 1.5
+    (flux_form = simulate(u₀.(x), (du, u) -> tendency!(du, u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt, stop_time = 10),
+     advective_form = simulate(u₀.(x), (du, u) -> advective_tendency!(du, u, Δx), ForwardEuler(); Δt, stop_time = 10))
+end;
+
+# ╔═╡ 7ce90062-0426-454f-b160-7e62c963b1e4
+let t = time_forms
+    (; x, Δx) = burgers
+    (; flux_form, advective_form) = two_forms
+    vermillion = Makie.wong_colors()[6]
+    fig = Figure(size = (800, 660))
+    ax1 = Axis(fig[1, 1], xlabel = "x", ylabel = "u", limits = (0, 2π, 0.4, 1.6), title = "Two upwind schemes for the Burgers equation, t = $t",
+               xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]))
+    t ≥ 2 && vlines!(ax1, mod(π + t, 2π), color = :gray40, linestyle = :dot)
+    draw_profiles!(ax1, x, [(label = "flux form", values = state_at(flux_form, t), color = scheme_colors.upwind),
+                            (label = "advective form", values = state_at(advective_form, t), color = vermillion)];
+                   exact = burgers_exact(t))
+    legend_below!(fig[2, 1], ax1)
+
+    ax2 = Axis(fig[3, 1], xlabel = "time", ylabel = "total / initial total", limits = (0, 10, 0.9, 1.02))
+    total(run) = [sum(u) * Δx for u in run.states] ./ (sum(run.states[1]) * Δx)
+    lines!(ax2, flux_form.times, total(flux_form), color = scheme_colors.upwind, linewidth = 3)
+    lines!(ax2, advective_form.times, total(advective_form), color = vermillion, linewidth = 3)
+    vlines!(ax2, t, color = :gray40, linestyle = :dash)
+    rowsize!(fig.layout, 3, Relative(0.25))
+    fig
+end
+
+# ╔═╡ 6388e1dd-b7ad-46a8-9104-526a3c9c7c7c
+md"""
+Both solutions are smooth and stable, and without the exact solution you couldn't tell from the picture which one is wrong. In the advective form the shock moves too slowly and the total amount of ``u`` leaks away: $(round(100 * (1 - sum(two_forms.advective_form.states[end]) / sum(two_forms.advective_form.states[1])), digits = 1))% is gone at ``t = 10``. A finer grid leaves the error in the position of the shock unchanged.
+
+In the flux form, what leaves one cell enters the next, so the total is exact, and an exact total forces the shock to move at the right speed. A climate model runs for centuries and must not lose or create heat, salt or water along the way, which is why ocean and atmosphere models are built on fluxes through the faces of cells.
+
+The next notebook, `ocean_planet.jl`, runs a model of a global ocean with [Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl). Its script makes the same choices as this solver: a grid of cells, a flux at the faces, a time stepper and a time step.
+"""
+
+# ╔═╡ ab84215c-7bd0-4844-992d-eb2cabf98089
+sign_change = let
+    N = 200
+    Δx = 2π / N
+    x = Δx/2:Δx:2π
+    run = simulate(sin.(x), (du, u) -> tendency!(du, u, Burgers(), UpwindFlux(), Δx), ForwardEuler(); Δt = 0.5 * Δx, stop_time = 3)
+    (; x, run)
+end;
+
+# ╔═╡ 6e6d532c-d6ce-485c-97e9-ef75102d35c6
+let
+    fig = Figure(size = (800, 340))
+    ax = Axis(fig[1, 1], xlabel = "x", ylabel = "u", limits = (0, 2π, -1.2, 1.2), title = "Burgers equation with u₀ = sin x, t = $time_sign_change",
+              xticks = (0:π/2:2π, ["0", "π/2", "π", "3π/2", "2π"]))
+    hlines!(ax, 0, color = :gray70)
+    draw_profiles!(ax, sign_change.x, [(label = "upwind + forward Euler", values = state_at(sign_change.run, time_sign_change), color = scheme_colors.upwind)])
+    fig
+end
+
 # ╔═╡ 8c12d86f-b478-484e-87e6-8d29e7dcdc3e
 backward_euler = let
-    Δt = courant_backward * Δx / a
-    L = tendency_matrix(CenteredFlux(), N)
-    A = lu(I - Δt * L)
-    nsteps = round(Int, 1 / Δt)
-    states = [similar(c₀) for n in 0:nsteps]
-    states[1] .= c₀
-    for n in 1:nsteps
-        ldiv!(states[n + 1], A, states[n])
-    end
-    states
+    run(scheme) = simulate(c₀, (dc, c) -> tendency!(dc, c, LinearAdvection(a), scheme, Δx), BackwardEuler();
+                           Δt = courant_backward * Δx / a, stop_time = 1)
+    (centered = run(CenteredFlux()), upwind = run(UpwindFlux()), third_order = run(UpwindThirdOrder()), weno = run(WENOFlux()))
 end;
 
 # ╔═╡ 9a4c5a4c-c25d-4916-9fba-495002f66344
 let
+    (; centered, upwind, third_order, weno) = backward_euler
     fig = Figure(size = (800, 410))
     ax = Axis(fig[1, 1], xlabel = "x", ylabel = "c", limits = (0, 1, -0.6, 1.6),
-              title = "Centered flux + backward Euler, C = $courant_backward, after one trip ($(length(backward_euler) - 1) steps)")
-    draw_profiles!(ax, x, [(label = "centered + backward Euler", values = backward_euler[end], color = scheme_colors.centered)];
+              title = "Backward Euler, C = $courant_backward, after one trip ($(length(centered.states) - 1) steps)")
+    draw_profiles!(ax, x, [(label = "centered", values = centered.states[end], color = scheme_colors.centered),
+                           (label = "upwind", values = upwind.states[end], color = scheme_colors.upwind),
+                           (label = "third-order upwind", values = third_order.states[end], color = scheme_colors.third_order, linestyle = :dash),
+                           (label = "WENO", values = weno.states[end], color = scheme_colors.weno, linestyle = :dot)];
                    exact = exact_tracer(1))
     legend_below!(fig[2, 1], ax)
     fig
@@ -1575,9 +1742,9 @@ end
 
 # ╔═╡ 47a8bb91-8196-48eb-b6d4-63ad62117f0c
 md"""
-Backward Euler is stable for every time step, even with the centered flux that failed before. In the eigenvalue plot, the eigenvalues of "centered + backward Euler" are inside or on the unit circle for every ``C``. (The small sawtooth in the plot above is the shortest wave on the grid, which the centered flux can't see.)
+Backward Euler is stable for every time step, even with the centered flux that failed before. In the eigenvalue plot of Exercise 4, the eigenvalues of "centered + backward Euler" are inside or on the unit circle for every ``C``. (The small sawtooth in the plot above is the shortest wave on the grid, which the centered flux can't see.)
 
-It is still a poor advection solver, for two reasons. Each step costs the solution of a linear system, and for the Burgers equation the system is nonlinear and costs more. And a long time step smears the solution badly, so to follow a wave you still need ``C`` near 1 or below.
+It is still a poor advection solver, for two reasons. Each step costs the solution of a system of equations, and with WENO or the Burgers equation the system is nonlinear and costs more. And backward Euler is itself very diffusive: where forward Euler takes away diffusion ``a^2\Delta t/2``, backward Euler adds it. This error is larger than the error of the fluxes, so third-order upwind and WENO give almost the same answer as the centered flux, and only first-order upwind, which adds diffusion of its own, is visibly worse. To follow a wave you still need ``C`` near 1 or below.
 
 Models use methods like this one for processes that are fast and whose details don't matter. In an ocean model those are the vertical mixing and, in some models, the waves on the sea surface.
 """
@@ -3840,8 +4007,11 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╠═61c05b91-c56d-4373-927e-4da6881ca2be
 # ╟─7b1a6aed-13de-4739-ae0c-522ac9e0d3fe
 # ╟─6b549874-6cc2-4078-ad99-83af21f3df0d
+# ╟─32820619-016e-4e37-a04b-394a7ed6d418
 # ╟─652c59a9-0fb1-4d74-bf75-cf6688ee45fe
 # ╟─3ae7b80b-b2ac-481b-9d3d-aeda8f6cc9e6
+# ╟─683b8170-49b6-4a1e-bbfe-0766f3829850
+# ╟─4785897b-7c5f-4a06-932f-85b84b768513
 # ╠═cd2ec92c-6e1f-462a-b585-2598b3c42155
 # ╟─880d45fc-e31a-4367-8779-f612ce736fe8
 # ╟─c05b017e-4779-489a-962d-91926577e07f
@@ -3851,7 +4021,10 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╟─0d11739c-14a6-4435-980e-22f93a422833
 # ╟─c003091a-8a14-4a9d-898a-86cd27fa926d
 # ╟─d4349e75-f356-4696-87c4-67465e6eb687
-# ╟─db567831-19b6-4ca7-8abf-05e81e3d00cd
+# ╟─9ffd8326-5c02-4648-996d-826d6e4ff0c8
+# ╟─cdd542a9-891c-48d0-b3a7-f7e7dc158e1d
+# ╟─90218f47-9629-4bec-8e11-feb253f3d25c
+# ╟─e7770fa6-a668-45f5-a6bb-04dd1068fb07
 # ╟─48bee702-7b53-4558-ba2b-461d13c4d75c
 # ╟─8f2520be-30e5-442b-8c4c-5c04df6589da
 # ╟─519f12cd-3b0e-4c21-8cce-9b6c1bac10e2
@@ -3860,9 +4033,10 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╠═b195ea93-3a9d-4607-b8e5-6d0c7ffdb8fe
 # ╟─2d1daf3c-c577-41d2-a988-774999f12fdc
 # ╟─18a73da5-75cc-4d8d-848d-bcba85bc16cc
+# ╟─72cfa962-cf69-4d1a-ba0f-bbe1b1ceae5e
+# ╟─cb81dc31-4987-4fd5-850f-fcd380d4a6f4
 # ╟─64819290-2e59-434b-86fa-279532560ffd
 # ╟─a192d708-a790-4902-86cb-7ebb9d110a48
-# ╟─406fbeee-1583-4c7e-a318-5009d186c1d4
 # ╟─e8d57055-b03a-4a43-9c27-bb51dfa174f6
 # ╠═63038188-e602-45f8-a355-3faeca092ad7
 # ╟─d874cea2-7214-4fe3-8906-32e2c769c747
@@ -3871,24 +4045,17 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╟─1cbcb64e-f233-421b-bdf4-ef6be8a696e6
 # ╟─1290d041-a09b-445c-b5ff-e484be47f3ad
 # ╠═637ff736-78f3-4cb0-85d6-f966d032027a
-# ╟─f732b713-9754-490d-8c6a-1693cdaaafe7
+# ╠═f732b713-9754-490d-8c6a-1693cdaaafe7
 # ╟─57f29cd6-c8af-49cf-8d78-3882f0f353a3
 # ╟─43688d97-1248-4756-98a5-152054c8a16c
 # ╟─3472f397-335c-425b-b19d-09842fc91885
 # ╟─947d749e-1847-4d8b-92ca-9be2f25ec1cd
-# ╟─dd9201fc-3a6f-485a-9403-81605597e83c
 # ╟─98e876ad-55f2-446b-b9fb-bb78c30e8a61
 # ╟─9570641e-f3d1-4a2c-944a-8696313faf13
 # ╟─a07d7f34-e4d4-49a5-be93-56cd84b2ee34
 # ╟─a4ca19fb-8262-4d56-a0dc-c42e029e2995
 # ╟─b681d694-31fd-4d02-b794-e39fa928f792
-# ╟─a1be5695-b54c-48a2-b153-207b4f231e8e
 # ╠═d0ca6d74-be30-4ec1-8aeb-88fe0fd2a444
-# ╠═8c734e9a-af1f-4a95-8df6-07999529b0ea
-# ╟─4b79a694-99fa-459a-aa82-bcdaf1372a6a
-# ╟─22910abe-d941-48a0-b4c6-2a6be24b6f5d
-# ╟─68c244a3-9089-4d61-988b-216967b43790
-# ╟─7649806a-f858-4357-933d-7724a098be72
 # ╟─88758f9f-4599-4300-8ce1-c713f4d36955
 # ╟─587f6b66-dd66-477d-afd4-228d5010f637
 # ╠═a2fcf8e5-44ce-442e-916d-30df3ec10f53
@@ -3918,7 +4085,15 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╟─0af11048-6e25-4b8a-821d-b54af3dd50b2
 # ╟─7183c932-16ca-4b72-9362-f3c83a377a4b
 # ╟─c09bb892-2f43-4ec5-9256-af2543e2eaab
+# ╟─dcf627f3-679b-42b3-9778-1a4d91ee4466
+# ╠═9263cd30-3845-4f75-a722-ccc8d7e9f851
+# ╟─bb37d67c-e1f2-44e1-b239-df5e97da81f3
+# ╟─be5f2358-11b0-4af9-ad57-3f21d9abe82b
+# ╟─598533b7-43a9-46e7-b159-1891ba42b638
+# ╟─127047cc-a51b-446c-8b15-10a3f0d1231b
+# ╟─0726633a-2ab0-4118-a358-d93cf90e06d2
 # ╟─c5c0863f-a83f-44b4-9c42-0cb758b77d5e
+# ╠═fb2e1203-a9ca-4a84-8c8c-47a25f1af60b
 # ╠═8c12d86f-b478-484e-87e6-8d29e7dcdc3e
 # ╟─9a4c5a4c-c25d-4916-9fba-495002f66344
 # ╟─47a8bb91-8196-48eb-b6d4-63ad62117f0c
