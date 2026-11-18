@@ -471,6 +471,9 @@ md"""
 
 - G. L. Wagner et al. (2025). [High-level, high-resolution ocean modeling at all scales with Oceananigans](https://arxiv.org/abs/2502.14148). The source of this model setup.
 - A. Ramadhan et al. (2020). [Oceananigans.jl: Fast and friendly geophysical fluid dynamics on GPUs](https://doi.org/10.21105/joss.02018). *Journal of Open Source Software* 5(53), 2018.
+- S. Silvestri et al. (2023). [Oceananigans.jl: A Julia library that achieves breakthrough resolution, memory and energy efficiency in global ocean simulations](https://arxiv.org/abs/2309.06662). arXiv:2309.06662. Global ocean simulations on GPUs at resolutions down to 488 m.
+- S. Silvestri et al. (2024). [A new WENO-based momentum advection scheme for simulations of ocean mesoscale turbulence](https://doi.org/10.1029/2023MS004130). *Journal of Advances in Modeling Earth Systems* 16(7). The `WENOVectorInvariant` scheme used in this notebook.
+- S. Silvestri et al. (2025). [A GPU-based ocean dynamical core for routine mesoscale-resolving climate simulations](https://doi.org/10.1029/2024MS004465). *Journal of Advances in Modeling Earth Systems* 17(4). The `HydrostaticFreeSurfaceModel` used in this notebook, running a decade of near-global ocean per day at 8 km resolution on 64 GPUs.
 - [Oceananigans.jl documentation](https://clima.github.io/OceananigansDocumentation/stable/), with more examples to run.
 - J. Marshall and R. A. Plumb (2008). [*Atmosphere, Ocean and Climate Dynamics: An Introductory Text*](https://www.sciencedirect.com/book/9780125586917/atmosphere-ocean-and-climate-dynamics), Academic Press. Includes rotating-tank experiments of baroclinic instability.
 - G. K. Vallis (2017). [*Atmospheric and Oceanic Fluid Dynamics*](https://doi.org/10.1017/9781107588431), 2nd edition, Cambridge University Press. See the chapters on baroclinic instability.
