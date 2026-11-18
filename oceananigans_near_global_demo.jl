@@ -21,9 +21,11 @@ begin
     using Oceananigans
     using Oceananigans.Units
     using Oceananigans.Architectures: synchronize
-    using Oceananigans.Operators: ζ₃ᶠᶠᶜ, Vᶜᶜᶜ
-    using SeawaterPolynomials
+    using Oceananigans.Operators: ζ₃ᶠᶠᶜ
+    using Oceananigans.ImmersedBoundaries: mask_immersed_field!
+    using Oceananigans.OrthogonalSphericalShellGrids: RotatedLatitudeLongitudeGrid
     using SeawaterPolynomials.TEOS10: TEOS10EquationOfState
+    import ConservativeRegridding
     using CairoMakie
     using PlutoUI
     using Printf
@@ -49,57 +51,99 @@ begin
     arch
 end
 
-# ╔═╡ 91623e61-db88-4a1e-b7e6-25c23b3e1260
-md"""
-!!! info "License and attribution"
-    The model setup is adapted from [`listings/baroclinic_wave.jl`](https://github.com/glwagner/OceananigansPaper/blob/70ae7ea425e0a9315f00d8d2b420318e676ed543/listings/baroclinic_wave.jl) in [OceananigansPaper](https://github.com/glwagner/OceananigansPaper), distributed under the Apache License, Version 2.0. The full license text is at the end of this notebook.
-
-    Changes from the original: converted to a Pluto notebook with explanations and exercises; uses the latitude-longitude grid only; runs on a Metal, CUDA or AMDGPU GPU when one is available, or on the CPU, in `Float32`; runs 120 days; saves the surface temperature and vorticity, the eddy heat flux and the full-depth temperature; adds plots, a movie and diagnostics.
-"""
-
 # ╔═╡ ae9a3c8c-e3d7-4f6a-af26-91efa98b9db6
 md"""
-# An ocean planet in twenty lines
+# Oceananigans.jl: fast and friendly ocean-flavored fluid dynamics
 
-The last notebook, `burgers_equation.jl`, built a solver for one equation in one dimension. A climate model does the same job in three dimensions, on a rotating sphere, for several equations at once.
+Previously, we built a solver for one equation in one dimension. Now, let's try using [Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl) to run a model of the global ocean in 3D and on a rotating sphere! Oceananigans.jl is a finite-volume fluid dynamics solver, written entirely in Julia, that runs on both CPUs and GPUs. It is developed as part of the [Climate Modeling Alliance (CliMA)](https://clima.caltech.edu/), a multi-institution effort to build a next-generation climate model in Julia. Oceananigans.jl has been designed from the ground up for GPUs, making it currently the [fastest ocean model on Earth](https://clima.caltech.edu/2024/04/15/the-worlds-fastest-ocean-model/) ([Silvestri et al., 2023](https://arxiv.org/abs/2309.06662)).
 
-Here you'll run a model of a global ocean and find the ideas of the last notebook inside it. The model is [Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl), an ocean model written in Julia, which we develop at MIT as part of an effort to build a new climate model.
+Oceananigans.jl is also the foundation of [Breeze.jl](https://github.com/NumericalEarth/Breeze.jl), a high-resolution atmosphere model for simulating clouds and storms. Through [NumericalEarth.jl](https://github.com/NumericalEarth/NumericalEarth.jl), Oceananigans.jl can be coupled to atmosphere, sea-ice and land models such as Breeze.jl and [SpeedyWeather.jl](https://github.com/SpeedyWeather/SpeedyWeather.jl), and through [ClimaCoupler.jl](https://github.com/CliMA/ClimaCoupler.jl) to [ClimaAtmos.jl](https://github.com/CliMA/ClimaAtmos.jl), CliMA's global atmosphere model. Many more packages build on or interact with Oceananigans.jl. Some examples include [OceanBioME.jl](https://github.com/OceanBioME/OceanBioME.jl) for ocean biogeochemistry, [ClimaSeaIce.jl](https://github.com/CliMA/ClimaSeaIce.jl) for sea ice, and [Terrarium.jl](https://github.com/NumericalEarth/Terrarium.jl) for land.
 
-The planet has no land. Its ocean is 3 km deep, warm near the equator and cold near the poles, with a sharp change of temperature, a **front**, at 45° latitude in each hemisphere. The water starts at rest. Within weeks the fronts break into waves, the waves roll up into eddies, and the eddies carry heat towards the poles. A fluid on a rotating planet removes a temperature contrast in this way, and the same process makes the storms in the video of the last notebook.
+In this notebook, we will set up an idealized simulation that aims to illustrate one of the most important fluid dynamical processes in the ocean, **baroclinic instability**, which is responsible for transporting heat from the equator to higher latitudes ([Marshall & Plumb, 2008](https://www.sciencedirect.com/book/9780125586917/atmosphere-ocean-and-climate-dynamics); [Vallis, 2017](https://doi.org/10.1017/9781107588431)). In this simulation, the planet has no land and has a 3-km-deep ocean that is warm near the equator and cold near the poles, with a sharp change of temperature, a **front**, at 45° latitude in each hemisphere. Within weeks, the fronts break into waves that roll up into eddies. A fluid on a rotating planet removes a temperature contrast in this way, which is the mechanism for the formation of storms in the atmosphere and the ocean, as in the [video](https://youtu.be/Ei8x3y-Ddq0) we saw previously.
 """
 
 # ╔═╡ 3a691689-54cc-4bd9-a4e0-2159e8a2dd53
 TableOfContents()
 
-# ╔═╡ cbbb6280-4384-46d9-8e1f-1d7d3e5a26d1
-md"""
-## 1. Start the simulation
-
-Tick this box now and read on while the model runs. With a GPU the run takes 1 to 3 minutes, and on a CPU several minutes more.
-
-**Run the simulation:** $(@bind run_simulation CheckBox(default = false))
-
-Pluto runs one cell at a time, so the notebook doesn't respond until the run is done. Progress messages appear under the cell in Section 5. While the box is ticked, a change to the model starts a new run, so untick it before you edit. If an earlier run left its output next to this notebook, the plots in Section 6 show it without a new run.
-"""
-
 # ╔═╡ 2ce0dfa9-f800-4eb0-b809-49826e7eef76
 md"""
-## 2. Setup
+## Setting up the software
 
-The next two cells load the packages and pick the hardware. If you have an Apple Silicon Mac, an NVIDIA GPU or an AMD GPU with working drivers, the notebook uses it. Otherwise it runs on the CPU. Numbers are stored in single precision (`Float32`), which Apple GPUs need and which is faster on all of them.
+First, we load the required packages:
+"""
+
+# ╔═╡ 53ee3e80-44ce-46d8-b680-f07e98b42055
+md"""
+If you have an Apple Silicon Mac, an NVIDIA GPU or an AMD GPU with working drivers, the notebook will use it. Otherwise it runs on the CPU. In this notebook, we will do the calculations in single precision (`Float32`) to support all hardware, since Apple Metal GPUs don't support double precision natively yet. For publication-worthy runs, using double precision is highly recommended.
+
+Owing to the design of Oceananigans.jl and Julia, apart from `arch`, nothing else in the notebook changes between the CPU and the GPU. Internally, Oceananigans.jl uses [KernelAbstractions.jl](https://github.com/JuliaGPU/KernelAbstractions.jl), which allows developers to "write once, run everywhere".
+
+Given the machine this notebook is running on, we will use **$(arch isa GPU ? Dict(:MetalBackend => "Apple GPU", :CUDABackend => "NVIDIA GPU", :ROCBackend => "AMD GPU")[nameof(typeof(arch.device))] : "CPU")** for the subsequent simulation.
+"""
+
+# ╔═╡ 7dcb171d-c8ef-4f57-aa51-51994eab1868
+md"""
+## Choosing a grid
+
+There are many types of grids you can choose from in Oceananigans.jl, such as `RectilinearGrid` for a box or a channel, `LatitudeLongitudeGrid`, `RotatedLatitudeLongitudeGrid`, `TripolarGrid`, `ConformalCubedSphereGrid` and `YinYangGrid` for a sphere, and `ImmersedBoundaryGrid`, which adds a sea floor, coastlines or islands to any of these. Since we are simulating fluid dynamics on a sphere, in this notebook we showcase three options appropriate for the needs of this simulation.
+
+1. A **latitude-longitude grid** uses lines of constant latitude and longitude, like a map. Its boxes get narrower toward the poles, and at a pole their width is zero, so the equations break down there. Our grid stops at 85°N and 85°S and has walls there.
+2. A **rotated latitude-longitude grid** is the same grid with its poles moved, here to 70°E, 55°N and the opposite point in the Southern Hemisphere.
+3. A **tripolar grid** keeps a latitude-longitude grid in the south, with a wall near 80°S, and puts two poles in the north, at 70°E and 250°E. This grid is well suited to simulations of Earth because its northern poles can be "hidden" on land (in Siberia and Canada). Our idealized planet has no land, so we add two small islands to cover them. Many ocean models used for climate projections run on a tripolar grid.
+"""
+
+# ╔═╡ 8f261ecd-4258-4224-9157-a8b965cccdfe
+function island_bottom(λ, φ)
+    Δλ = mod(λ - 70 + 90, 180) - 90   # degrees of longitude to the nearer northern pole of the tripolar grid
+    on_island = (Δλ / 8)^2 + ((φ - 55) / 4)^2 < 2
+    return on_island ? 100 : -3000
+end
+
+# ╔═╡ d759e126-1023-4519-8e91-62caf37c608f
+function make_grid(arch, grid_type; resolution, FT = Oceananigans.defaults.FloatType)
+    size = (360 ÷ resolution, 170 ÷ resolution, 10)
+    halo = (7, 7, 7)
+    z = (-3000, 0)
+
+    grid = if grid_type == :latlon
+        LatitudeLongitudeGrid(arch, FT; size, halo, z, longitude = (0, 360), latitude = (-85, 85))
+    elseif grid_type == :rotated
+        RotatedLatitudeLongitudeGrid(arch, FT; size, halo, z, longitude = (0, 360), latitude = (-85, 85), north_pole = (70, 55))
+    else
+        ImmersedBoundaryGrid(TripolarGrid(arch, FT; size, halo, z), GridFittedBottom(island_bottom))
+    end
+
+    synchronize(arch)
+    return grid
+end
+
+# ╔═╡ 69ecde40-72d9-4d04-b70d-91c3efb14ce7
+md"""
+`make_grid` builds each grid with boxes `resolution` degrees wide and 10 levels over a depth of 3 km. The `halo` is a layer of extra boxes around the edge of the grid, so that the boxes at the edge have neighbors. `island_bottom` gives the height of the sea floor: +100 m, dry land, near the two northern poles of the tripolar grid, and −3000 m everywhere else.
+
+Below we show a schematic of the three different grids at 5°, seen from above 60°N. Look for the hole at the pole of the latitude-longitude grid, the shifted hole of the rotated grid, and the two northern poles of the tripolar grid. Between those two poles the tripolar grid folds over the North Pole: each grid line on one side of the fold continues into its mirror image on the other side. The red lines show where they join.
+"""
+
+# ╔═╡ bba74ad1-42f3-4f30-aa0a-36448f169dc0
+cpu_grids = Dict(t => make_grid(CPU(), t; resolution = 5) for t in (:latlon, :rotated, :tripolar));
+
+# ╔═╡ 0add26c5-b5ba-4282-93fc-da7d61de70d0
+md"""
+Pick one grid of your choice! We will run the simulation with this grid.
+
+**Grid:** $(@bind grid_type Select([:latlon => "Latitude-longitude", :rotated => "Rotated latitude-longitude", :tripolar => "Tripolar"]))
 """
 
 # ╔═╡ a80dc238-4349-40e8-a4a0-9a5e76aaf61a
 md"""
-## 3. The model
+## Setting up the simulation
 
-This is the whole model.
+We can set up the complete `model` and `simulation` in a single cell:
 """
 
 # ╔═╡ 80e5c2e7-6db2-4d80-bef1-c7632da09ed9
 begin
-    grid = LatitudeLongitudeGrid(arch; size = (180, 85, 10), halo = (7, 7, 7),
-                                 longitude = (0, 360), latitude = (-85, 85), z = (-3000, 0))
+    grid = make_grid(arch, grid_type; resolution = 2)
 
     model = HydrostaticFreeSurfaceModel(grid;
                                         coriolis = HydrostaticSphericalCoriolis(),
@@ -109,7 +153,8 @@ begin
                                         momentum_advection = WENOVectorInvariant(order = 9),
                                         tracer_advection = WENO(order = 7))
 
-    Tᵢ(λ, φ, z) = 15 * (1 - tanh((abs(φ) - 45) / 8)) + rand()
+    T₀(φ) = 15 * (1 - tanh((abs(φ) - 45) / 8))
+    Tᵢ(λ, φ, z) = T₀(φ) + rand()
     Sᵢ(λ, φ, z) = 28 - 5e-3 * z + rand()
     set!(model, T = Tᵢ, S = Sᵢ)
 
@@ -119,29 +164,36 @@ end
 
 # ╔═╡ 5c15ae8f-bcfb-4f5d-bf28-b376328b7f6e
 md"""
-One more line, `run!(simulation)`, runs it.
+To run the simulation, we just call
+```julia
+run!(simulation)
+```
 
-#### The grid
+Before that, let's look at some of the arguments in the code snippet:
 
-The ocean is cut into boxes: 180 in longitude, 85 in latitude and 10 in depth. Each box is 2° wide, about 220 km at the equator, and 300 m thick. The grid stops at 85° latitude, where it has walls. Further north the boxes of a latitude-longitude grid get so narrow that they are a problem (see Section 4).
+### Grid
 
-#### The equations
+With `resolution = 2`, the grid has 180 boxes in longitude, 85 in latitude and 10 in depth. Each box is about 220 km wide at the equator and 300 m thick.
 
-`HydrostaticFreeSurfaceModel` solves the equations of the last notebook, Newton's second law for a rotating fluid, in the form that suits a thin layer. The ocean is a thousand times wider than it is deep, so vertical accelerations are tiny and the vertical part of ``F = ma`` reduces to a balance: the pressure at any depth is the weight of the water above it. This is called **hydrostatic balance**.
+### Fluid equations
 
-| argument | choice | meaning |
+`HydrostaticFreeSurfaceModel` solves a variant of the Navier–Stokes equations with approximations that suit a model whose grid boxes are kilometers wide in the parameter regime of Earth's ocean. Since Earth's ocean is much wider than it is deep, at the scales of our grid resolution vertical accelerations are small and the vertical part of ``F = ma`` reduces to a balance where the pressure at any depth equals the weight per unit area of the water above it. This is called **hydrostatic balance**.
+
+Vertical accelerations matter only for motions that are about as tall as they are wide, such as small-scale turbulence. To resolve these motions for Earth's ocean, a model must solve the full rotating Boussinesq equations (`NonhydrostaticModel` in Oceananigans.jl) on a grid with boxes about 1 m wide. The ocean holds about 1.3 billion km³ of water, so a global model at 1 m resolution needs about 10¹⁸ boxes, far more than any computer can store today! Global models therefore use the hydrostatic equations and represent the smaller motions with turbulence models.
+
+| argument | choice | explanation |
 |:---------|:-------|:--------|
 | `coriolis` | `HydrostaticSphericalCoriolis()` | the Coriolis force on a rotating sphere |
-| `buoyancy` | `SeawaterBuoyancy` with TEOS-10 | the density of seawater from its temperature, salinity and depth |
-| `tracers` | `(:T, :S)` | temperature and salinity, which the flow carries along |
-| `free_surface` | `SplitExplicitFreeSurface` | the sea surface moves up and down |
-| `momentum_advection`, `tracer_advection` | `WENO` schemes | how to compute the advection terms |
+| `buoyancy` | `SeawaterBuoyancy` with TEOS-10 | the realistic density of Earth's seawater computed from its temperature, salinity and depth |
+| `tracers` | `(:T, :S)` | tracers carried by the flow, here temperature and salinity (more tracers can be added) |
+| `free_surface` | `SplitExplicitFreeSurface` | a sea surface that moves up and down |
+| `momentum_advection`, `tracer_advection` | `WENO` (weighted essentially non-oscillatory) schemes | how to compute the advection terms |
 
-#### The initial state
+### Initial condition
 
-The temperature is 30 °C in the tropics and 0 °C near the poles, the same at every depth. Salinity increases with depth, so the water at the bottom is heavier than the water at the top. Both get a little random noise, up to 1 °C and 1 g/kg. The model starts at rest.
+To approximate the state of Earth's ocean in an idealized form, we initialize the temperature to be 30 °C in the tropics and 0 °C near the poles, the same at every depth. Salinity increases with depth, so the water at the bottom is denser than the water at the top. To kickstart the turbulence, we add random noise of up to 1 °C and 1 g/kg. The model starts at rest.
 
-#### The simulation
+### Simulation time
 
 The time step is 10 minutes and the run lasts 120 days.
 """
@@ -150,87 +202,54 @@ The time step is 10 minutes and the run lasts 120 days.
 let
     φ = -85:0.5:85
     fig = Figure(size = (700, 300))
-    ax = Axis(fig[1, 1], xlabel = "latitude (°)", ylabel = "°C", xticks = -90:30:90, title = "Initial temperature (without the noise)")
-    lines!(ax, φ, @.(15 * (1 - tanh((abs(φ) - 45) / 8))), color = :firebrick, linewidth = 2)
+    ax = Axis(fig[1, 1], xlabel = "latitude (°)", ylabel = "temperature (°C)", xticks = -90:30:90, titlesize = 16, title = "Initial temperature (without the noise)")
+    lines!(ax, φ, T₀.(φ), color = :gray50, linewidth = 2)
     fig
 end
 
-# ╔═╡ cb9899d1-0837-42b3-88fd-6090fb831e6f
-md"""
-## 4. Find the last notebook in this script
-
-Each idea of the Burgers notebook has a counterpart in those twenty lines.
-
-| In the 1D solver | In Oceananigans |
-|:-----------------|:----------------|
-| cells, cell averages, fluxes through faces | `LatitudeLongitudeGrid`: 180 × 85 × 10 boxes. Oceananigans is a finite-volume model, so it conserves heat and salt exactly |
-| `UpwindFlux()`, `UpwindThirdOrder()` and `WENOFlux()` | `WENO(order = 7)` and `WENOVectorInvariant(order = 9)`: upwind schemes that read 7 or 9 cells |
-| a scheme reads its neighbours | `halo = (7, 7, 7)`: extra cells round the edge of the grid, so that the cells at the edge have neighbours |
-| the CFL condition | `Δt = 10minutes` |
-| `RK3()` | Oceananigans steps in time with a method of the same family |
-| the friction inside the upwind scheme | the model has no friction term. The smoothing inside the WENO schemes does that job |
-
-### The CFL condition on a sphere
-
-The fluid must not cross more than one cell in one time step. On this grid the smallest cells are next to the walls at 85°, where the meridians come together, and "the fluid" stands for the fastest signal of any kind.
-"""
-
-# ╔═╡ 4f5cf0d4-2ea8-4e62-841d-1b09111769be
-stratification = let
-    eos = TEOS10EquationOfState()
-    g, Ω, H = 9.81, 7.292e-5, 3000
-    α = SeawaterPolynomials.thermal_expansion(15, 35.5, -H / 2, eos)
-    β = SeawaterPolynomials.haline_contraction(15, 35.5, -H / 2, eos)
-    N = sqrt(g * β * 5e-3)                     # buoyancy frequency [s⁻¹]
-    M² = g * α * 15 / 8 / 111.2e3              # g α ∂T/∂y at the middle of the front [s⁻²]
-    (; N, deformation_radius = N * H / (2Ω * sind(45)), eady_growth_rate = 0.31 * M² / N, internal_wave_speed = N * H / π)
-end;
-
-# ╔═╡ 829221ca-5325-4e0b-9d65-bce670004840
-let
-    Δt = 10minutes
-    Δx_min = 6371e3 * cosd(84) * deg2rad(2)
-    row(name, c, step) = @sprintf("| %s | %.0f m/s | %s | %.2f |", name, c, prettytime(step), c * step / Δx_min)
-    Markdown.parse("""
-    The smallest cell is $(round(Int, Δx_min / 1e3)) km wide.
-
-    | signal | speed | time step | Courant number |
-    |:-------|------:|----------:|---------------:|
-    $(row("the fastest currents in this run", 5, Δt))
-    $(row("internal waves, which ride on the layers of the ocean", stratification.internal_wave_speed, Δt))
-    $(row("waves on the sea surface, with their own short steps", sqrt(9.81 * 3000), Δt / 30))
-    $(row("waves on the sea surface, if they used the long step", sqrt(9.81 * 3000), Δt))
-    """)
-end
-
-# ╔═╡ 0d0ce3b4-b845-4f7f-bbb4-9a8ea9f296ed
-md"""
-The waves on the sea surface travel at ``\sqrt{g H} \approx 170`` m/s, about 600 km/h. With a 10-minute step they would cross 4 cells per step, and the model would blow up. A step short enough for them would make the whole model 30 times more expensive.
-
-`SplitExplicitFreeSurface` avoids that cost. It solves the equations for the sea surface separately, with many short steps inside each long step, and because those equations are two-dimensional the short steps are cheap. Climate models do this often: each process gets the time step that it needs.
-"""
-
 # ╔═╡ 05401c11-43ad-4c09-8a1e-7ea95d128c09
 md"""
-## 5. What to save, and the run
+## Saving simulation outputs
 
-A three-dimensional field at every time step would fill the disk, so we save only what we will plot: the temperature and the **vorticity** ``\zeta`` at the sea surface once a day, the **eddy heat flux** once a day (Section 6 explains it), and the temperature at every depth at the start and at the end. The vorticity measures how fast the water spins, which makes eddies easy to see.
+A model's variables come in two kinds. **Prognostic** variables, such as the velocities, the temperature ``T`` and the salinity ``S``, are the ones the model steps forward in time. **Diagnostic** variables, such as the kinetic energy or the vorticity, are computed from the prognostic ones when we need them.
 
-The operations in the next cell are **lazy**. `v′ * T′` builds a recipe, and the recipe runs on the GPU when the output is written.
+Here we save the (prognostic) temperature and two (diagnostic) quantities. The **speed** ``\sqrt{u^2 + v^2}`` shows the currents. The **vorticity** ``\zeta = \partial v / \partial x - \partial u / \partial y`` is the vertical component of the curl of the velocity. It measures how fast the water spins, so it shows eddies in the ocean and storms in the atmosphere clearly.
 """
 
 # ╔═╡ 84c481fd-6ad9-417b-877a-befc212cd4ae
 begin
     u, v, w = model.velocities
     T = model.tracers.T
-
+    speed = @at (Center, Center, Center) sqrt(u^2 + v^2)
     ζ = @at (Center, Center, Center) KernelFunctionOperation{Face, Face, Center}(ζ₃ᶠᶠᶜ, grid, u, v)
-
-    v′ = v - Field(Average(v, dims = 1))   # the part of v that varies with longitude
-    T′ = T - Field(Average(T, dims = 1))
-    eddy_heat_flux = Field(Integral(v′ * T′, dims = 3))
     synchronize(arch)
 end;
+
+# ╔═╡ ab84cfbc-3718-4847-b220-c8869caaa98d
+md"""
+### Lazy operations
+
+In Oceananigans.jl, most diagnostics are **lazy**, meaning that you write a recipe for the set of operations acting on the prognostic variables, and the model runs it only when a result is needed. The speed we defined above is an example:
+```julia
+speed = @at (Center, Center, Center) sqrt(u^2 + v^2)
+```
+This line doesn't compute anything. It builds an object that remembers the steps: interpolate `u` and `v` to the box centers, square them, add them and take the square root. The same holds for derivatives such as `∂x(u)` as well as averages and integrals such as `Average(T, dims = 1)`. For the vorticity, we write
+```julia
+ζ = @at (Center, Center, Center) KernelFunctionOperation{Face, Face, Center}(ζ₃ᶠᶠᶜ, grid, u, v)
+```
+which is also a lazy operation. It only defines a recipe that computes the vorticity at the box corners from `u` and `v`, then interpolates it to the box centers. To get numbers out of a recipe, we need to wrap it in a `Field` and call `compute!`, which the output writer does automatically.
+
+Lazy operations are useful because:
+
+- They save memory. We never store the speed or the vorticity for the entire ocean, since we only want to save the surface layer. A GPU has much less memory than a computer's main memory, so memory efficiency matters even more for GPU code.
+- They are fast. The speed is computed in one loop over the grid, on the CPU or the GPU, with no temporary arrays for `u^2`, `v^2` or their sum.
+- They are always up to date. A recipe reads `u` and `v` at the moment it runs, so you define it once before the run and every output uses the current velocities.
+"""
+
+# ╔═╡ 81097ca3-5023-4387-8a24-3af2c7c643fc
+md"""
+We can also add a callback that prints the progress of the simulation at an interval of our choice, set with `TimeInterval` or `IterationInterval`.
+"""
 
 # ╔═╡ c4e14bdc-d063-4150-9a62-e48ecfb6787b
 function progress(sim)
@@ -240,296 +259,228 @@ function progress(sim)
 end
 
 # ╔═╡ 43f051bb-1dbe-4f3d-b11f-94cde9e01815
-output_dir = mkpath(joinpath(@__DIR__, "ocean_planet_output"))
+output_dir = mkpath(joinpath(@__DIR__, "demo_output"))
+
+# ╔═╡ 40f45db1-996f-4eb0-ab50-db6fa1c90fd0
+run_name = "$(grid_type)_$(360 ÷ size(grid, 1))deg"
 
 # ╔═╡ 7611f1fd-8680-423c-b52a-001b24d0601c
-output_files = let
+output_file = let
     add_callback!(simulation, progress, TimeInterval(10days))
-
-    writer(fields, filename, schedule; kw...) = JLD2Writer(model, fields; dir = output_dir, filename, schedule, overwrite_files = true, kw...)
-    writers = simulation.output_writers
-    writers[:surface] = writer((; T, ζ), "surface", TimeInterval(1day); indices = (:, :, size(grid, 3)))
-    writers[:heat_flux] = writer((; eddy_heat_flux), "eddy_heat_flux", TimeInterval(1day))
-    writers[:temperature] = writer((; T), "temperature", TimeInterval(120days))
-
-    map(w -> w.filepath, (; surface = writers[:surface], heat_flux = writers[:heat_flux], temperature = writers[:temperature]))
+    simulation.output_writers[:surface] = JLD2Writer(model, (; T, speed, ζ); dir = output_dir, filename = "surface_$run_name",
+                                                     indices = (:, :, size(grid, 3)), schedule = TimeInterval(1day),
+                                                     overwrite_files = true)
+    simulation.output_writers[:surface].filepath
 end
+
+# ╔═╡ cbbb6280-4384-46d9-8e1f-1d7d3e5a26d1
+md"""
+**Run the simulation:** $(@bind run_simulation CheckBox(default = false))
+
+With a GPU the run takes 1 to 3 minutes, and on a CPU several minutes more. Progress messages will appear under the cell as the simulation is running. While the box is checked, a change to the model starts a new run. For rapid iteration, uncheck the box before you make any edits. Each run saves its output under `run_name`, which records the grid and the resolution. If an earlier run with the same `run_name` saved its output, the plots in [Results](#results) show it without a new run.
+"""
 
 # ╔═╡ 076f663d-281c-4c97-9f1d-f63ce011337f
 simulation_done = if run_simulation
     run!(simulation)
     true
 else
-    all(isfile, output_files)
+    isfile(output_file)
 end
 
 # ╔═╡ 75ce0ac0-6a5c-4e8d-a1ea-84ef5598a2ef
 md"""
-## 6. Results
+## Results $(html"<a id='results'></a>")
 """
 
 # ╔═╡ b499be47-5368-4c3b-9e19-3c9a8d786ac0
 results = if simulation_done
-    (T = FieldTimeSeries(output_files.surface, "T"),
-     ζ = FieldTimeSeries(output_files.surface, "ζ"),
-     eddy_heat_flux = FieldTimeSeries(output_files.heat_flux, "eddy_heat_flux"),
-     T_full = FieldTimeSeries(output_files.temperature, "T"))
+    (T = FieldTimeSeries(output_file, "T"),
+     speed = FieldTimeSeries(output_file, "speed"),
+     ζ = FieldTimeSeries(output_file, "ζ"))
 end;
 
 # ╔═╡ f34fe12c-88e9-416a-9b7f-89c27f705696
 md"""
 ### The planet
 
-The temperature (left) and the vorticity (right) at the sea surface. Red vorticity spins anticlockwise and blue clockwise.
+The temperature (left), the speed (middle) and the vorticity (right) at the sea surface. Red (positive) vorticity means the water spins counterclockwise, and blue (negative) means clockwise. On the tripolar grid, the white patches are the islands.
 
-**Day:** $(@bind planet_day PlutoUI.Slider(0:120, default = 40, show_value = true))
+**Day:** $(@bind planet_day PlutoUI.Slider(0:(isnothing(results) ? 0 : length(results.T.times) - 1), default = 0, show_value = true))
+
 **View from longitude:** $(@bind view_longitude PlutoUI.Slider(-180:10:180, default = -30, show_value = true))
+
+**View from latitude:** $(@bind view_latitude PlutoUI.Slider(-90:5:90, default = 35, show_value = true))
 """
 
 # ╔═╡ 566e0aca-d2b0-4071-aaa1-061cd858c3bc
 md"""
-The run goes through three stages as you move the day slider.
+Initially, nothing much appears to be happening in the temperature. Within the first few days, a zonal (east-west) current known as a **jet** forms along each front, where the temperature gradient is largest. The jet flows east near the surface and develops because the planet rotates.
 
-In the first days nothing seems to happen at the surface, but the water starts to move: a current, called a jet, forms along each front, towards the east at the surface. Rotation is the reason. The warm water is lighter and stands a little higher than the cold water, so the pressure pushes water across the front, and the Coriolis force turns that flow until it runs along the front.
+After one to two weeks the fronts start to meander. The meanders then grow, break and roll up into eddies, with tongues of warm water that reach toward the poles and tongues of cold water that reach toward the equator.
 
-After one to two weeks the fronts start to meander. The meanders then grow, break and roll up into eddies, with tongues of warm water that reach towards the poles and tongues of cold water that reach towards the equator.
-
-The next cell makes a movie of the run, which takes about 30 seconds.
+We can also make a movie of the simulation.
 
 **Make the movie:** $(@bind make_movie CheckBox(default = false))
 """
 
 # ╔═╡ 3494a6b6-d761-4b1b-a398-891bbec22c5a
-movie_file = joinpath(output_dir, "ocean_planet.mp4");
-
-# ╔═╡ d4db5136-89ef-4b01-8f65-2d92ce74adeb
-md"""
-### Why the front breaks up
-
-A front stores energy, because cold, heavy water stands next to warm, light water. If the cold water could slide under the warm water, heavy water would end up lower and light water higher, which releases energy in the way a ball does when it rolls downhill.
-
-Rotation prevents the direct slide: the Coriolis force turns any flow across the front into a flow along it, which is the jet.
-
-A wave on the front gets round this. In a meander, warm water moves towards the pole and a little upward, and cold water moves towards the equator and a little downward. This releases some of the stored energy, the energy makes the meander stronger, and a stronger meander releases more. The growth feeds itself, so it is exponential.
-
-This process is **baroclinic instability**. It makes the eddies of the ocean and, in the atmosphere, the storms of the mid-latitudes, which are the comma-shaped clouds in the video. The eddies have a preferred size, the **deformation radius**, which depends on the rotation and on how strongly the fluid is layered. In the atmosphere it is about 1000 km. In the real ocean it is 10 to 100 km, so an ocean model needs a much finer grid than an atmosphere model to see its eddies. This planet's ocean is layered very strongly on purpose. Its deformation radius is $(round(Int, stratification.deformation_radius / 1e3)) km, which a 2° grid can just hold.
-"""
+movie_file = joinpath(output_dir, "ocean_planet_$run_name.mp4");
 
 # ╔═╡ 1ae2ed62-a8e9-4ae6-a5b6-dcf9f537e273
 md"""
-### Eddies carry heat
+### Zonal means
 
-Where a warm tongue moves towards the pole, the northward velocity and the temperature are both higher than their averages round the latitude circle. Where a cold tongue moves towards the equator, both are lower. Write ``v'`` and ``T'`` for the departures from the average round the latitude circle. In both tongues the product ``v'T'`` has the same sign, so both carry heat towards the pole.
+The simulation above shows baroclinic instability, a process found throughout planetary fluid dynamics. It is the main source of the eddies in the ocean and the storms in the midlatitude atmosphere.
 
-The **eddy heat flux** is this product, summed over depth and turned into watts:
-
-```math
-\rho_0\,c_p \int_{-H}^{0} v'\,T'\,dz \qquad [\mathrm{W\ per\ metre\ of\ latitude\ circle}],
-```
-
-with the density ``\rho_0`` and the heat capacity ``c_p`` of seawater. Add it up round a latitude circle and you get the **heat transport** across that latitude, in watts.
+To see its effects more clearly, we average each surface field around each latitude circle, the **zonal mean**, and plot the result as a function of time. On the latitude-longitude grid each row of boxes is a latitude circle. On the other two grids the rows don't follow latitude circles, so `zonal_mean` first regrids the field onto a latitude-longitude grid with 2° boxes. The regridding is **conservative**: each new box gets the area-weighted average of the old boxes that overlap it, so the regridded field holds the same amount of heat.
 """
 
-# ╔═╡ 3020f6fd-4c81-4063-873e-1231c4f7eadb
-heat = if !isnothing(results)
-    let flux = results.eddy_heat_flux
-        ρ₀, cₚ = 1026, 3990                                   # density [kg m⁻³] and heat capacity [J kg⁻¹ K⁻¹] of seawater
-        φ = φnodes(flux.grid, Face())                         # latitudes of the cell faces
-        Δx = @. flux.grid.radius * cosd(φ) * deg2rad(2)       # width of a cell at each latitude [m]
-        towards_pole = sign.(φ)'
-        maps = [ρ₀ * cₚ .* towards_pole .* Float64.(interior(flux[n], :, :, 1)) for n in eachindex(flux.times)]   # [W m⁻¹]
-        transport = reduce(hcat, [vec(sum(map, dims = 1)) .* Δx for map in maps])                                 # [W], latitude × day
-        (; φ, maps, transport, mean_transport = vec(sum(transport, dims = 2)) ./ size(transport, 2))
+# ╔═╡ 5c675a7b-7396-4b32-8296-3db55ba1dc75
+begin
+    zonal_grid = LatitudeLongitudeGrid(Float64; size = (180, 90, 1), longitude = (0, 360), latitude = (-90, 90), z = (-1, 0))
+
+    zonal_regridder = if grid_type != :latlon
+        source_grid = make_grid(CPU(), grid_type; resolution = 360 ÷ size(grid, 1), FT = Float64)   # the regridder needs Float64 coordinates
+        ConservativeRegridding.Regridder(zonal_grid, source_grid)
     end
-end;
+end
 
-# ╔═╡ 5430b003-fe8c-4e43-bce8-a9423705ef70
-md"""
-**Day:** $(@bind heat_day PlutoUI.Slider(0:120, default = 40, show_value = true))
-"""
+# ╔═╡ b30b3f25-170f-42fa-9803-3f4b4d4ba965
+function zonal_mean(fts)
+    ocean = similar(fts[1])
+    fill!(ocean, 1)
+    mask_immersed_field!(ocean)
 
-# ╔═╡ fc87feae-8962-40fd-873e-d5068e1b4287
+    if isnothing(zonal_regridder)
+        φ = φnodes(fts.grid, Center())
+        latitude_rows = field -> interior(field, :, :, 1)
+    else
+        φ = φnodes(zonal_grid, Center())
+        regridded = CenterField(zonal_grid)
+        latitude_rows = field -> interior(ConservativeRegridding.regrid!(regridded, zonal_regridder, field), :, :, 1)
+    end
+
+    ocean_per_row = sum(latitude_rows(ocean), dims = 1)
+    means = [sum(latitude_rows(fts[n]), dims = 1) ./ ocean_per_row for n in eachindex(fts.times)]
+    return φ, permutedims(reduce(vcat, means))
+end
+
+# ╔═╡ 51d43b83-7abf-48c1-9f2f-029134078c8f
 if isnothing(results)
     md"Run the simulation to see this plot."
 else
-    let n = heat_day + 1
-        λ, φ, _ = nodes(results.T)
-        surface_T = interior(results.T[n], :, :, 1)
-        strip = (xticks = 0:45:360, yticks = 30:15:60, limits = (0, 360, 25, 65), ylabel = "latitude (°)")
+    let
+        days = results.speed.times ./ day
+        φ, zonal_speed = zonal_mean(results.speed)
 
-        fig = Figure(size = (1000, 720))
-        ax1 = Axis(fig[1, 1]; strip..., title = "Surface temperature between 25°N and 65°N, day $heat_day")
-        ax2 = Axis(fig[2, 1]; strip..., xlabel = "longitude (°)", title = "Eddy heat flux towards the pole, and contours of temperature")
-        ax3 = Axis(fig[3, 1:2], xlabel = "latitude (°)", ylabel = "PW", xticks = -90:15:90, limits = (-85, 85, -50, 800),
-                   title = "Heat transport towards the pole, whole planet")
-        hm1 = heatmap!(ax1, λ, φ, surface_T, colormap = :thermal, colorrange = (0, 30))
-        hm2 = heatmap!(ax2, λ, heat.φ, heat.maps[n] ./ 1e9, colormap = :balance, colorrange = (-100, 100))
-        contour!(ax2, λ, φ, surface_T, levels = 5:5:25, color = :black, linewidth = 0.7)
-        hlines!(ax3, 0, color = :gray60)
-        lines!(ax3, heat.φ, heat.mean_transport ./ 1e15, color = :black, linestyle = :dash, label = "mean of the run")
-        lines!(ax3, heat.φ, heat.transport[:, n] ./ 1e15, color = :firebrick, linewidth = 2, label = "day $heat_day")
-        axislegend(ax3, position = :ct)
-        Colorbar(fig[1, 2], hm1, label = "°C")
-        Colorbar(fig[2, 2], hm2, label = "GW m⁻¹")
-        hidexdecorations!(ax1, grid = false, ticks = false)
+        fig = Figure(size = (700, 420))
+        ax = Axis(fig[1, 1], xlabel = "time (days)", ylabel = "latitude (°)", yticks = -90:30:90, titlesize = 16, title = "Zonal-mean surface speed")
+        hm = heatmap!(ax, days, φ, zonal_speed', colormap = :speed, colorrange = (0, 2))
+        Colorbar(fig[1, 2], hm, label = "speed (m/s)")
+        fig
+    end
+end
+
+# ╔═╡ 1bf163ef-ab3b-450f-9902-80c9ca82945e
+md"""
+The jets appear at ±45° in the zonal-mean speed. In the first two weeks, a weaker streak moves from each jet toward the pole: a wave that forms as the water adjusts from rest. After about three weeks the bands get stronger and wider, as the eddies add their own zonal currents.
+"""
+
+# ╔═╡ 3d02997c-1fb7-4b7f-ba10-396ff7f83bc3
+if isnothing(results)
+    md"Run the simulation to see this plot."
+else
+    let
+        days = results.T.times ./ day
+        φ, zonal_T = zonal_mean(results.T)
+
+        fig = Figure(size = (1100, 420))
+        ax1 = Axis(fig[1, 1], xlabel = "latitude (°)", ylabel = "temperature (°C)", xticks = -90:30:90, titlesize = 22, title = "Zonal-mean surface temperature")
+        lines!(ax1, φ, zonal_T[:, 1], color = :gray50, linewidth = 2, label = "day 0")
+        lines!(ax1, φ, zonal_T[:, end], color = :firebrick, linewidth = 2, label = "day $(round(Int, days[end]))")
+        axislegend(ax1, position = :cb)
+
+        ax2 = Axis(fig[1, 2], xlabel = "time (days)", ylabel = "latitude (°)", yticks = -90:30:90, titlesize = 22, title = "Change since day 0")
+        hm = heatmap!(ax2, days, φ, (zonal_T .- zonal_T[:, 1])', colormap = :balance, colorrange = (-15, 15))
+        Colorbar(fig[1, 3], hm, label = "temperature change (°C)")
         fig
     end
 end
 
 # ╔═╡ 511f6251-8445-4484-9d89-e94d102c8940
 md"""
-The two maps show the front of the Northern Hemisphere. In the second map, red means heat moving towards the pole and blue means heat moving towards the equator. The black lines are contours of the surface temperature.
+From the figures above, we see that the ocean eddies spread the surface temperature out compared to its initial condition. However, the heat spreads poleward over a narrower band of latitude than it does in the atmosphere. This is because ocean eddies are typically much smaller than the storms in the atmosphere, so they mix heat over a shorter distance.
 
-The second map is almost all red. Along one meander of the front, the warm tongue is red and the cold tongue next to it is red too. The bottom panel adds up each latitude circle for the whole planet: the transport is towards the pole in both hemispheres and largest at the fronts. It is strongest while the eddies form, and it falls later, when they have mixed away most of the contrast.
-"""
-
-# ╔═╡ 1889409d-d5d5-45cb-8386-1a525acd3e90
-md"""
-### How fast do the eddies grow?
-
-The vertical axis of this plot is logarithmic, so exponential growth is a straight line. The eddies start from the random noise in the initial state, and for the first three weeks they grow exponentially.
-"""
-
-# ╔═╡ 425e9917-fa9e-45df-a046-69dc8d64bb05
-growth = if !isnothing(results)
-    let
-        at_fronts = findall(φ -> abs(φ) == 45, heat.φ)
-        transport = vec(sum(heat.transport[at_fronts, :], dims = 1)) ./ 2    # mean of 45°S and 45°N [W]
-        days = results.eddy_heat_flux.times ./ day
-        e_folding_days = 15 / log(transport[21] / transport[6])              # from day 5 to day 20
-        eady_e_folding_days = 1 / (2 * stratification.eady_growth_rate * day)
-        (; days, transport, e_folding_days, eady_e_folding_days)
-    end
-end;
-
-# ╔═╡ 149f84fd-935e-4089-9c49-0a663368d586
-if isnothing(results)
-    md"Run the simulation to see this plot."
-else
-    let (; days, transport, eady_e_folding_days) = growth
-        fig = Figure(size = (800, 380))
-        ax = Axis(fig[1, 1], xlabel = "time (days)", ylabel = "PW", yscale = log10, limits = (0, 120, 1, 2000),
-                  title = "Heat transport by eddies across 45° latitude")
-        lines!(ax, days, ifelse.(transport .> 0, transport ./ 1e15, NaN), label = "simulation")
-        t = 5:20
-        lines!(ax, t, transport[6] / 1e15 .* exp.((t .- 5) ./ eady_e_folding_days), color = :black, linestyle = :dash, label = "Eady model")
-        axislegend(ax, position = :rb)
-        fig
-    end
-end
-
-# ╔═╡ 6d340d8f-8160-42e7-b411-527a4f5e1a34
-if isnothing(results)
-    md"Run the simulation to see these numbers."
-else
-    Markdown.parse("""
-    Between day 5 and day 20 the transport grew by a factor ``e`` every $(round(growth.e_folding_days, digits = 1)) days. The simplest theory of baroclinic instability, the Eady model (1949), predicts $(round(growth.eady_e_folding_days, digits = 1)) days for this front (the dashed line).
-
-    The Eady model assumes a temperature gradient that is the same everywhere, on a flat rotating plane, and it still gets the time scale right to within a factor of two. After about day 25 the growth stops: the eddies have used up most of the energy that was stored in the fronts.
-    """)
-end
-
-# ╔═╡ 821af8d1-3528-482f-9bfb-5ae1b4d30e88
-md"""
-### Check the answer, and compare it with the Earth
-
-There is a second way to measure the heat transport. Heat is conserved, and the planet has no heating or cooling. So the heat that crossed 45°N during the run is the heat that the water north of 45°N gained.
-"""
-
-# ╔═╡ ff955f59-1d7a-40e4-8911-fec259969c2d
-heat_gained = if !isnothing(results)
-    let T = results.T_full
-        ρ₀, cₚ = 1026, 3990
-        volume = interior(Field(KernelFunctionOperation{Center, Center, Center}(Vᶜᶜᶜ, T.grid)))
-        north_of_45 = reshape(φnodes(T.grid, Center()) .> 45, 1, :, 1)
-        heat_content(n) = ρ₀ * cₚ * sum(Float64.(interior(T[n])) .* volume .* north_of_45)   # [J]
-        (heat_content(2) - heat_content(1)) / (T.times[2] - T.times[1])                      # [W]
-    end
-end;
-
-# ╔═╡ 0c9e15a0-cdc8-43ef-a2d5-10f720707ce4
-if isnothing(results)
-    md"Run the simulation to see these numbers."
-else
-    let
-        from_flux = heat.mean_transport[findfirst(==(45), heat.φ)] / 1e15
-        from_content = heat_gained / 1e15
-        Markdown.parse("""
-        | Mean heat transport across 45°N over the 120 days | |
-        |:--|--:|
-        | from the eddy heat flux ``v'T'`` | $(round(Int, from_flux)) PW |
-        | from the heat gained by the water north of 45°N | $(round(Int, from_content)) PW |
-
-        The two numbers agree to within $(round(Int, 100 * abs(1 - from_flux / from_content)))%. The second is the exact one: a finite-volume model keeps the books on heat to the last digit. The first is smaller because of the advection scheme. We computed ``v'T'`` with the average of the two cells next to each face, the centered flux of the last notebook. The model uses WENO, an upwind scheme, and an upwind flux is a centered flux plus a correction that smooths. That correction also carries heat down the temperature gradient, towards the pole. We checked this with the model's own flux function: its flux accounts for the difference.
-        """)
-    end
-end
-
-# ╔═╡ ddfa0a8c-34ca-4817-8986-3c4a698f8c4e
-md"""
-On the Earth, the atmosphere and the ocean together carry more than 5 PW across the mid-latitudes. This planet carries about 50 times that, and it can do so only for a short time. The Earth's ocean has its temperature contrast in the top few hundred metres. This planet has a 30 °C contrast through all 3 km of its depth, and nothing maintains it, because no Sun heats the tropics and nothing cools the poles. The run measures a single release of a large store of energy.
-
-A climate is a balance between the subjects of this week's two classes. Radiation builds the temperature contrast, as in Monday's model, and the fluid removes it, as here. A climate model computes both, for centuries.
+Overall, Earth's climate is an intricate balance between the dynamics and the thermodynamics of the atmosphere and the ocean. To understand the climate system and make predictions about the future, climate scientists need to develop atmosphere and ocean models and run them for centuries to millennia. Many open questions remain in both the dynamics and the thermodynamics of the climate system, and we hope this series of classes has given you a flavor of what that work looks like!
 """
 
 # ╔═╡ 27a20176-a359-4a41-8385-5a098885489a
 md"""
-## 7. Exercises
+## Exercises
 
-Untick the run box while you edit, then tick it again.
+### Compare the grids
 
+Run all three grids. Compare the maps, the zonal-mean temperature and the wall time in the progress messages. Do the three grids give the same physics? Which one costs the most?
+"""
+
+# ╔═╡ bb926df3-cfcd-4a75-a603-42628aa7cece
+details("Hint", md"""
+On an Apple M-series GPU, not counting compilation, 120 days took about 1 minute on the latitude-longitude and rotated grids and 1.4 minutes on the tripolar grid. The results are close. The grid is a numerical choice, and a good model gives the same physics on any reasonable grid. The tripolar grid does extra work at the fold, where the two halves of its northern part meet.
+""")
+
+# ╔═╡ 43c1aadb-311a-47f3-b4b8-bb4d7fc77c4f
+md"""
 ### Break the CFL condition
 
-Set `Δt = 30minutes` in the model cell and run it. What happens, and how soon? Then find the longest time step that works.
+The **CFL (Courant–Friedrichs–Lewy) condition** says that in one time step, nothing in the model (a current or a wave) may travel farther than about one grid box. Set `Δt = 30minutes` in the model cell and run it. What happens, and how soon? Then find the longest time step that works.
 """
 
 # ╔═╡ f6d14578-452b-4f8f-add9-1f89ed8b22e9
 details("Hint", md"""
-In our tests a step of 20 minutes ran, and a step of 30 minutes stopped with an error within the first day of model time. On a GPU the error is a `DomainError`: some number in the model has become nonsense, and a square root or a power fails.
-
-The Courant numbers in the table are near 0.15 with a 10-minute step, so with 30 minutes they are near 0.5, still below 1. The model's limit is lower than that of our 1D solver, because it moves information in three directions at once, and its time stepper has a smaller stable range than the ones we built.
+In our tests on the latitude-longitude grid, a step of 20 minutes ran, and a step of 30 minutes stopped with an error within the first day of model time. On a GPU the error is a `DomainError`: some number in the model has become nonsense, and a square root or a power fails.
 """)
 
 # ╔═╡ 59869cca-4917-4757-aa13-e62ff9330efd
 md"""
 ### Halve the grid spacing
 
-Set `size = (360, 170, 10)`. Predict how much longer the run takes: there are 4 times as many cells, and the smallest cell is half as wide. Then run it, and compare the eddies and the heat transport with the 2° run.
+Set `resolution = 1` in the model cell. Predict how much longer the run takes: there are 4 times as many boxes, and the smallest box is half as wide. Then run it, and compare the eddies and the zonal-mean temperature with the 2° run.
 """
 
 # ╔═╡ 61c05b91-c56d-4373-927e-4da6881ca2be
 details("Hint", md"""
-With a 10-minute step the 1° model blows up, because the smallest cells are half as wide. Set `Δt = 5minutes`. The run then has 4 times the cells and twice the steps: 8 times the work. In three dimensions, with twice the levels too, it would be 16 times.
+With a 10-minute step the 1° model blows up, because the smallest boxes are half as wide. Set `Δt = 5minutes`. The run then has 4 times the boxes and twice the steps: 8 times the work. If we also doubled the number of vertical levels, it would be 16 times.
 """)
 
 # ╔═╡ 7b1a6aed-13de-4739-ae0c-522ac9e0d3fe
 md"""
 ### Remove the noise
 
-Delete `+ rand()` from both initial conditions. What do you predict? Run it and look at the maps.
+On the latitude-longitude grid, delete `+ rand()` from both initial conditions and change `run_name` (for example, add `"_no_noise"`) so the earlier output is kept. What do you predict? Run it and look at the maps.
 """
 
 # ╔═╡ 6b549874-6cc2-4078-ad99-83af21f3df0d
 details("Hint", md"""
-The front stays the same at every longitude and no eddies form. The equations don't prefer any longitude, so a state that is the same at every longitude stays that way. The front is unstable, but an instability needs a seed to grow from, and a real ocean or atmosphere always has one.
+The front stays the same at every longitude and no eddies form. The equations don't prefer any longitude, so a state that is the same at every longitude stays that way. The front is unstable, but an instability needs a seed to grow from, and a real ocean or atmosphere always has one. The rotated and tripolar grids are not the same at every longitude, so their numerical errors can seed eddies even without the noise.
 """)
 
 # ╔═╡ 652c59a9-0fb1-4d74-bf75-cf6688ee45fe
 md"""
-## 8. Further reading
+## Further reading
 
 - G. L. Wagner et al. (2025). [High-level, high-resolution ocean modeling at all scales with Oceananigans](https://arxiv.org/abs/2502.14148). The source of this model setup.
 - A. Ramadhan et al. (2020). [Oceananigans.jl: Fast and friendly geophysical fluid dynamics on GPUs](https://doi.org/10.21105/joss.02018). *Journal of Open Source Software* 5(53), 2018.
 - [Oceananigans.jl documentation](https://clima.github.io/OceananigansDocumentation/stable/), with more examples to run.
-- G. K. Vallis (2017). *Atmospheric and Oceanic Fluid Dynamics*, 2nd edition, Cambridge University Press. The chapters on baroclinic instability.
-- `baroclinic_wave.jl` in this repository runs the same planet on three different grids. `baroclinic_channel.jl` studies the same instability in a channel driven by wind.
+- J. Marshall and R. A. Plumb (2008). [*Atmosphere, Ocean and Climate Dynamics: An Introductory Text*](https://www.sciencedirect.com/book/9780125586917/atmosphere-ocean-and-climate-dynamics), Academic Press. Includes rotating-tank experiments of baroclinic instability.
+- G. K. Vallis (2017). [*Atmospheric and Oceanic Fluid Dynamics*](https://doi.org/10.1017/9781107588431), 2nd edition, Cambridge University Press. See the chapters on baroclinic instability.
 """
 
 # ╔═╡ 3ae7b80b-b2ac-481b-9d3d-aeda8f6cc9e6
 md"""
 ## Appendix: plotting helpers
 
-These functions draw a field on a globe. `orthographic` is the projection that a camera far from the planet would see.
+These functions draw a field on a globe. `orthographic` is the projection that a camera far from the planet would see. `lon_lat` gives the longitude and latitude of every box, on any of the three grids.
 """
 
 # ╔═╡ cd2ec92c-6e1f-462a-b585-2598b3c42155
@@ -541,13 +492,47 @@ function orthographic(λ, φ; λ₀ = -30, φ₀ = 35)
 end
 
 # ╔═╡ 880d45fc-e31a-4367-8779-f612ce736fe8
-function longitude_latitude(grid)
-    λ, φ, _ = nodes(grid, Center(), Center(), Center())
+function lon_lat(grid, ℓx, ℓy)
+    λ = Array(λnodes(grid, ℓx, ℓy, Center()))
+    φ = Array(φnodes(grid, ℓx, ℓy, Center()))
+    λ isa AbstractMatrix && return λ, φ
     return λ .+ 0 .* φ', 0 .* λ .+ φ'
 end
 
 # ╔═╡ c05b017e-4779-489a-962d-91926577e07f
-close_seam(a) = vcat(a, a[1:1, :])   # repeat the first meridian, because the grid wraps round in longitude
+close_seam(a) = vcat(a, a[1:1, :])   # repeat the first meridian, because the grid wraps around in longitude
+
+# ╔═╡ 497984f7-5009-477f-adbf-cf80e6ab72fd
+let
+    fig = Figure(size = (1200, 430))
+    titles = Dict(:latlon => "Latitude-longitude", :rotated => "Rotated latitude-longitude", :tripolar => "Tripolar")
+    for (i, t) in enumerate((:latlon, :rotated, :tripolar))
+        λ, φ = close_seam.(lon_lat(cpu_grids[t], Face(), Face()))
+        x, y, visible = orthographic(λ, φ; λ₀ = -20, φ₀ = 60)
+        x[.!visible] .= NaN
+        ax = Axis(fig[1, i], aspect = DataAspect(), titlesize = 22, title = titles[t])
+        hidedecorations!(ax)
+        hidespines!(ax)
+        for j in axes(x, 2)
+            lines!(ax, x[:, j], y[:, j], color = :black, linewidth = 0.5)
+        end
+        for k in axes(x, 1)
+            lines!(ax, x[k, :], y[k, :], color = :black, linewidth = 0.5)
+        end
+        if t == :tripolar
+            Nx, Ny = size(x, 1) - 1, size(x, 2)
+            for k in 1:Nx÷2
+                mirror = [k, Nx + 2 - k]
+                lines!(ax, x[mirror, Ny], y[mirror, Ny], color = :red, linewidth = 1)
+            end
+        end
+        lines!(ax, Circle(Point2f(0, 0), 1), color = :black, linewidth = 1)
+    end
+    fig
+end
+
+# ╔═╡ da1dfe12-48ef-405e-9000-b661203a2a05
+land_to_nan(field, mask = field) = ifelse.(isnan.(mask) .| (mask .== 0), NaN32, field)
 
 # ╔═╡ 83b1054a-d95a-4bca-a219-c1eaed0ae83a
 function globe!(ax, λ, φ, data; λ₀ = -30, φ₀ = 35, kw...)
@@ -561,23 +546,34 @@ function globe!(ax, λ, φ, data; λ₀ = -30, φ₀ = 35, kw...)
     return plot
 end
 
+# ╔═╡ 9d223bad-ca93-40b1-b021-d83064222dbe
+function surface_figure(results, n; λ₀, φ₀ = 35)
+    λ, φ = lon_lat(results.T.grid, Center(), Center())
+    Tₙ = @lift land_to_nan(interior(results.T[$n], :, :, 1))
+    speedₙ = @lift land_to_nan(interior(results.speed[$n], :, :, 1), $Tₙ)
+    ζₙ = @lift land_to_nan(interior(results.ζ[$n], :, :, 1), $Tₙ) ./ 1e-5
+
+    fig = Figure(size = (1500, 520))
+    ax1 = Axis(fig[1, 1], aspect = DataAspect(), titlesize = 22, title = "Surface temperature")
+    ax2 = Axis(fig[1, 3], aspect = DataAspect(), titlesize = 22, title = "Surface speed")
+    ax3 = Axis(fig[1, 5], aspect = DataAspect(), titlesize = 22, title = "Surface vorticity")
+    hidedecorations!.((ax1, ax2, ax3))
+    hidespines!.((ax1, ax2, ax3))
+    hm1 = globe!(ax1, λ, φ, Tₙ; λ₀, φ₀, colormap = :thermal, colorrange = (0, 30))
+    hm2 = globe!(ax2, λ, φ, speedₙ; λ₀, φ₀, colormap = :speed, colorrange = (0, 2))
+    hm3 = globe!(ax3, λ, φ, ζₙ; λ₀, φ₀, colormap = :balance, colorrange = (-2, 2))
+    Colorbar(fig[1, 2], hm1, label = "temperature (°C)")
+    Colorbar(fig[1, 4], hm2, label = "speed (m/s)")
+    Colorbar(fig[1, 6], hm3, label = "vorticity (10⁻⁵ s⁻¹)")
+    Label(fig[0, :], @lift("Day $($n - 1)"), fontsize = 24, font = :bold)
+    return fig
+end
+
 # ╔═╡ 523a3e0a-df64-4772-ac00-b8cd94321626
 if isnothing(results)
     md"Run the simulation to see this plot."
 else
-    let n = planet_day + 1
-        λ, φ = longitude_latitude(results.T.grid)
-        fig = Figure(size = (1100, 520))
-        ax1 = Axis(fig[1, 1], aspect = DataAspect(), title = "Surface temperature, day $planet_day")
-        ax2 = Axis(fig[1, 3], aspect = DataAspect(), title = "Surface vorticity, day $planet_day")
-        hidedecorations!.((ax1, ax2))
-        hidespines!.((ax1, ax2))
-        hm1 = globe!(ax1, λ, φ, interior(results.T[n], :, :, 1); λ₀ = view_longitude, colormap = :thermal, colorrange = (0, 30))
-        hm2 = globe!(ax2, λ, φ, interior(results.ζ[n], :, :, 1) ./ 1e-5; λ₀ = view_longitude, colormap = :balance, colorrange = (-2, 2))
-        Colorbar(fig[1, 2], hm1, label = "°C")
-        Colorbar(fig[1, 4], hm2, label = "ζ (10⁻⁵ s⁻¹)")
-        fig
-    end
+    surface_figure(results, Observable(planet_day + 1); λ₀ = view_longitude, φ₀ = view_latitude)
 end
 
 # ╔═╡ 16adfbd5-1653-496d-b6fc-ca10d8417b48
@@ -587,18 +583,12 @@ function embed_mp4(path; width = 900)
 end
 
 # ╔═╡ 00226ea4-663e-4034-878d-2401028768dc
-if !isnothing(results) && make_movie
+if isnothing(results)
+    md"Run the simulation to see the movie."
+elseif make_movie
     let
-        λ, φ = longitude_latitude(results.T.grid)
         n = Observable(1)
-        fig = Figure(size = (1000, 500))
-        ax1 = Axis(fig[1, 1], aspect = DataAspect(), title = @lift("Surface temperature, day $($n - 1)"))
-        ax2 = Axis(fig[1, 2], aspect = DataAspect(), title = "Surface vorticity")
-        hidedecorations!.((ax1, ax2))
-        hidespines!.((ax1, ax2))
-        λ₀ = @lift -30 + 2 * ($n - 1)
-        globe!(ax1, λ, φ, @lift(interior(results.T[$n], :, :, 1)); λ₀, colormap = :thermal, colorrange = (0, 30))
-        globe!(ax2, λ, φ, @lift(interior(results.ζ[$n], :, :, 1) ./ 1e-5); λ₀, colormap = :balance, colorrange = (-2, 2))
+        fig = surface_figure(results, n; λ₀ = @lift(-30 + 2 * ($n - 1)))
         CairoMakie.record(fig, movie_file, 1:length(results.T.times); framerate = 15) do i
             n[] = i
         end
@@ -607,7 +597,26 @@ if !isnothing(results) && make_movie
 elseif isfile(movie_file)
     embed_mp4(movie_file)
 else
-    md"Tick the box to make the movie."
+    md"Check the box to make the movie."
+end
+
+# ╔═╡ 91623e61-db88-4a1e-b7e6-25c23b3e1260
+let
+	changes = md"""
+	- converted to a Pluto notebook with explanations and exercises
+	- grid chosen from a menu
+	- tripolar grid islands wrap in longitude, so both northern poles are covered
+	- runs on Metal, CUDA, AMDGPU or CPU, in `Float32`
+	- runs for 120 days
+	- saves surface temperature, speed and vorticity
+	- adds plots, a movie and the zonal-mean temperature
+	"""
+	md"""
+	!!! info "License and attribution"
+	    The model setup is adapted from [`listings/baroclinic_wave.jl`](https://github.com/glwagner/OceananigansPaper/blob/70ae7ea425e0a9315f00d8d2b420318e676ed543/listings/baroclinic_wave.jl) in [OceananigansPaper](https://github.com/glwagner/OceananigansPaper), under the Apache License, Version 2.0 (full text below).
+
+	    $(details("Changes from the original", changes))
+	"""
 end
 
 # ╔═╡ 28b9a1be-96ca-40f7-8bc2-4e9cf3994fe6
@@ -797,6 +806,7 @@ AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+ConservativeRegridding = "8e50ac2c-eb48-49bc-a402-07c87b949343"
 Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
 Oceananigans = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
 PlutoUI = "7f904dfe-b85e-4ff6-b463-dae2292396a8"
@@ -807,6 +817,7 @@ SeawaterPolynomials = "d496a93d-167e-4197-9f49-d3af4ff8fe40"
 AMDGPU = "~2.7.0"
 CUDA = "~6.2.2"
 CairoMakie = "~0.15.17"
+ConservativeRegridding = "~0.2.21"
 Metal = "~1.10.0"
 Oceananigans = "~0.117.0"
 PlutoUI = "~0.7.84"
@@ -817,9 +828,9 @@ SeawaterPolynomials = "~0.3.11"
 PLUTO_MANIFEST_TOML_CONTENTS = """
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.13.3"
+julia_version = "1.13.4"
 manifest_format = "2.1"
-project_hash = "02a15055d7fa65d3b1f22e0df164e457a0da208d"
+project_hash = "d5dc27af3a659f19b645f881503a757749836c22"
 
 [[deps.AMDGPU]]
 deps = ["AbstractFFTs", "AcceleratedKernels", "Adapt", "Atomix", "BFloat16s", "CEnum", "ExprTools", "GPUArrays", "GPUCompiler", "GPUToolbox", "KernelAbstractions", "LLD_jll", "LLVM", "LLVM_jll", "Libdl", "LinearAlgebra", "Pkg", "PrecompileTools", "Preferences", "PrettyTables", "Printf", "ROCmDeviceLibs_jll", "Random", "Random123", "RandomNumbers", "SparseArrays", "StaticArraysCore", "Statistics", "UnsafeAtomics"]
@@ -1017,6 +1028,13 @@ registries = "General"
 uuid = "18cc8868-cbac-4acf-b575-c8ff214dc66f"
 version = "1.4.0"
 
+[[deps.BitIntegers]]
+deps = ["Random"]
+git-tree-sha1 = "091d591a060e43df1dd35faab3ca284925c48e46"
+registries = "General"
+uuid = "c3b6d118-76ef-56ca-8cc7-ebb389d030a1"
+version = "0.3.7"
+
 [[deps.Bzip2_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "1b96ea4a01afe0ea4090c5c8039690672dd13f2e"
@@ -1167,6 +1185,12 @@ registries = "General"
 uuid = "55437552-ac27-4d47-9aa3-63184e8fd398"
 version = "1.0.0"
 
+[[deps.ChunkSplitters]]
+git-tree-sha1 = "1c52c8e2673edc030191177ff1aee42d25149acb"
+registries = "General"
+uuid = "ae650224-84b6-46f8-82ea-d812ca08434e"
+version = "3.2.0"
+
 [[deps.CodecBzip2]]
 deps = ["Bzip2_jll", "TranscodingStreams"]
 git-tree-sha1 = "84990fa864b7f2b4901901ca12736e45ee79068c"
@@ -1264,6 +1288,30 @@ registries = "General"
 uuid = "95dc2771-c249-4cd0-9c9f-1f3b4330693c"
 version = "0.1.9"
 
+[[deps.ConservativeRegridding]]
+deps = ["ChunkSplitters", "ConstructionBase", "DocStringExtensions", "Extents", "GeoInterface", "GeometryOps", "GeometryOpsCore", "LinearAlgebra", "ProgressMeter", "SciMLPublic", "SmallCollections", "SortTileRecursiveTree", "SparseArrays", "StableTasks", "StaticArrays"]
+git-tree-sha1 = "b02c0e025f75e769c31d0c9e43a3887089716707"
+registries = "General"
+uuid = "8e50ac2c-eb48-49bc-a402-07c87b949343"
+version = "0.2.21"
+
+    [deps.ConservativeRegridding.extensions]
+    ConservativeRegriddingClimaCoreExt = "ClimaCore"
+    ConservativeRegriddingHealpixExt = "Healpix"
+    ConservativeRegriddingInterfacesExt = "Interfaces"
+    ConservativeRegriddingNCDatasetsExt = "NCDatasets"
+    ConservativeRegriddingOceananigansExt = ["KernelAbstractions", "Oceananigans"]
+    ConservativeRegriddingRingGridsExt = "RingGrids"
+
+    [deps.ConservativeRegridding.weakdeps]
+    ClimaCore = "d414da3d-4745-48bb-8d80-42e94e092884"
+    Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
+    Interfaces = "85a1e053-f937-4924-92a5-1367d23b7b87"
+    KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+    NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+    Oceananigans = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
+    RingGrids = "d1845624-ad4f-453b-8ff4-a8db365bf3a7"
+
 [[deps.ConstructionBase]]
 git-tree-sha1 = "b4b092499347b18a015186eae3042f72267106cb"
 registries = "General"
@@ -1282,6 +1330,13 @@ registries = "General"
 uuid = "d38c429a-6771-53c6-b99e-75d170b6e991"
 version = "0.6.3"
 
+[[deps.CoordinateTransformations]]
+deps = ["LinearAlgebra", "StaticArrays"]
+git-tree-sha1 = "a692f5e257d332de1e554e4566a4e5a8a72de2b2"
+registries = "General"
+uuid = "150eb455-5306-5404-9cee-2592286d6298"
+version = "0.6.4"
+
 [[deps.CoreMath]]
 deps = ["CoreMath_jll"]
 git-tree-sha1 = "8c0480f92b1b1796239156a1b9b1bfb1b39499b4"
@@ -1295,6 +1350,13 @@ git-tree-sha1 = "a692a4c1dc59a4b8bc0b6403876eb3250fde2bc3"
 registries = "General"
 uuid = "a38c48d9-6df1-5ac9-9223-b6ada3b5572b"
 version = "0.1.0+0"
+
+[[deps.CpuId]]
+deps = ["Markdown", "PrecompileTools"]
+git-tree-sha1 = "5dbd5150b96f29553fc3b553c6bfb0eadf7ac204"
+registries = "General"
+uuid = "adafc99b-e345-5852-983c-f28acb93d879"
+version = "0.3.3"
 
 [[deps.Crayons]]
 git-tree-sha1 = "54b76cbb40d9a0f5368c880725b2f141da77c94f"
@@ -1425,6 +1487,12 @@ git-tree-sha1 = "fdcc9d4a253e0041d37c95487f9ae027c3ec002d"
 registries = "General"
 uuid = "21656369-7473-754a-2065-74616d696c43"
 version = "1.1.6"
+
+[[deps.Extents]]
+git-tree-sha1 = "b309b36a9e02fe7be71270dd8c0fd873625332b4"
+registries = "General"
+uuid = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
+version = "0.1.6"
 
 [[deps.FFMPEG_jll]]
 deps = ["Artifacts", "Bzip2_jll", "FreeType2_jll", "FriBidi_jll", "JLLWrappers", "LAME_jll", "Libdl", "Ogg_jll", "OpenSSL_jll", "Opus_jll", "PCRE2_jll", "Zlib_jll", "libaom_jll", "libass_jll", "libfdk_aac_jll", "libva_jll", "libvorbis_jll", "x264_jll", "x265_jll"]
@@ -1630,22 +1698,72 @@ registries = "General"
 uuid = "a0844989-3bd2-4988-8bea-c9407ab0941b"
 version = "1.2.0"
 
+[[deps.GeoFormatTypes]]
+git-tree-sha1 = "7528a7956248c723d01a0a9b0447bf254bf4da52"
+registries = "General"
+uuid = "68eda718-8dee-11e9-39e7-89f7f65f511f"
+version = "0.4.5"
+
+[[deps.GeoInterface]]
+deps = ["DataAPI", "Extents", "GeoFormatTypes"]
+git-tree-sha1 = "20f6b13b28c6304104968374f38c24ef71a8ea16"
+registries = "General"
+uuid = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
+version = "1.6.2"
+
+    [deps.GeoInterface.extensions]
+    GeoInterfaceMakieExt = ["Makie", "GeometryBasics"]
+    GeoInterfaceRecipesBaseExt = "RecipesBase"
+
+    [deps.GeoInterface.weakdeps]
+    GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
+    Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+    RecipesBase = "3cdcf5f2-1ef4-517c-9805-6587b60abb01"
+
 [[deps.GeometryBasics]]
 deps = ["EarCut_jll", "LinearAlgebra", "PrecompileTools", "Random", "StaticArrays"]
 git-tree-sha1 = "ec46c5825710fa1a15d468acb2d93cc939a7a5fe"
 registries = "General"
 uuid = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
 version = "0.5.13"
+weakdeps = ["Extents", "GeoInterface", "IntervalSets"]
 
     [deps.GeometryBasics.extensions]
     ExtentsExt = "Extents"
     GeometryBasicsGeoInterfaceExt = "GeoInterface"
     IntervalSetsExt = "IntervalSets"
 
-    [deps.GeometryBasics.weakdeps]
-    Extents = "411431e0-e8b7-467b-b5e0-f676ba4f2910"
-    GeoInterface = "cf35fbd7-0cd7-5166-be24-54bfbe79505f"
-    IntervalSets = "8197267c-284f-5f27-9208-e0e47529a953"
+[[deps.GeometryOps]]
+deps = ["AbstractTrees", "AdaptivePredicates", "CoordinateTransformations", "DataAPI", "DelaunayTriangulation", "ExactPredicates", "Extents", "GeoFormatTypes", "GeoInterface", "GeometryOpsCore", "LinearAlgebra", "PrecompileTools", "Random", "SortTileRecursiveTree", "StaticArrays", "Statistics", "Tables"]
+git-tree-sha1 = "b0d208d68332d90d632d9bb4303e0b55ca8fb13c"
+registries = "General"
+uuid = "3251bfac-6a57-4b6d-aa61-ac1fef2975ab"
+version = "0.1.47"
+
+    [deps.GeometryOps.extensions]
+    GeometryOpsDataFramesExt = "DataFrames"
+    GeometryOpsDimensionalDataExt = "DimensionalData"
+    GeometryOpsFlexiJoinsExt = "FlexiJoins"
+    GeometryOpsLibGEOSExt = "LibGEOS"
+    GeometryOpsMakieExt = "Makie"
+    GeometryOpsProjExt = "Proj"
+    GeometryOpsTGGeometryExt = "TGGeometry"
+
+    [deps.GeometryOps.weakdeps]
+    DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+    DimensionalData = "0703355e-b756-11e9-17c0-8b28908087d0"
+    FlexiJoins = "e37f2e79-19fa-4eb7-8510-b63b51fe0a37"
+    LibGEOS = "a90b1aa1-3769-5649-ba7e-abc5a9d163eb"
+    Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+    Proj = "c94c279d-25a6-4763-9509-64d165bea63e"
+    TGGeometry = "d7e755d2-3c95-4bcf-9b3c-79ab1a78647b"
+
+[[deps.GeometryOpsCore]]
+deps = ["DataAPI", "GeoInterface", "StableTasks", "Tables"]
+git-tree-sha1 = "8f32a94cf3d80a716cae6025af6cbc4e68421da5"
+registries = "General"
+uuid = "05efe853-fabf-41c8-927e-7063c8b9f013"
+version = "0.1.12"
 
 [[deps.GettextRuntime_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "JLLWrappers", "Libdl", "Libiconv_jll"]
@@ -2335,7 +2453,7 @@ version = "0.3.4"
 
 [[deps.MozillaCACerts_jll]]
 uuid = "14a3606d-f60d-562e-9121-12d972cd8159"
-version = "2026.10.20"
+version = "2026.11.5"
 
 [[deps.MuladdMacro]]
 deps = ["PrecompileTools"]
@@ -2469,7 +2587,7 @@ version = "0.3.34+0"
 [[deps.OpenBLAS_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
-version = "0.3.30+0"
+version = "0.3.30+1"
 
 [[deps.OpenEXR]]
 deps = ["Colors", "FileIO", "OpenEXR_jll"]
@@ -2863,6 +2981,13 @@ registries = "General"
 uuid = "fdea26ae-647d-5447-a871-4b548cad5224"
 version = "3.8.2"
 
+[[deps.SciMLPublic]]
+deps = ["PrecompileTools"]
+git-tree-sha1 = "74685afb51732a464fbce79a72708f7c4203ceb7"
+registries = "General"
+uuid = "431bcebd-1456-4ced-9d72-93c2757fff0b"
+version = "1.3.0"
+
 [[deps.ScopedValues]]
 deps = ["HashArrayMappedTries", "Logging"]
 git-tree-sha1 = "67a144433c4ce877ee6d1ada69a124d6b1ecf7be"
@@ -2920,9 +3045,31 @@ registries = "General"
 uuid = "45858cf5-a6b0-47a3-bbea-62219f50df47"
 version = "0.1.6"
 
+[[deps.SmallCollections]]
+deps = ["BitIntegers", "CpuId", "LinearAlgebra", "Random"]
+git-tree-sha1 = "7b5124b89a89d7c0030e4fe28256a1df680538be"
+registries = "General"
+uuid = "2b935e18-93d6-40ac-ae34-fe54c09f00e1"
+version = "0.6.3"
+
+    [deps.SmallCollections.extensions]
+    BangBangExt = "BangBang"
+    StaticArraysExt = "StaticArrays"
+
+    [deps.SmallCollections.weakdeps]
+    BangBang = "198e06fe-97b7-11e9-32a5-e1d131e6ad66"
+    StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+
 [[deps.Sockets]]
 uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
 version = "1.11.0"
+
+[[deps.SortTileRecursiveTree]]
+deps = ["AbstractTrees", "Extents", "GeoInterface"]
+git-tree-sha1 = "f9aa6616a9b3bd01f93f27c010f1d25fc5a094a9"
+registries = "General"
+uuid = "746ee33f-1797-42c2-866d-db2fce69d14d"
+version = "0.1.4"
 
 [[deps.SortingAlgorithms]]
 deps = ["DataStructures"]
@@ -2946,6 +3093,12 @@ weakdeps = ["ChainRulesCore"]
 
     [deps.SpecialFunctions.extensions]
     SpecialFunctionsChainRulesCoreExt = "ChainRulesCore"
+
+[[deps.StableTasks]]
+git-tree-sha1 = "c4f6610f85cb965bee5bfafa64cbeeda55a4e0b2"
+registries = "General"
+uuid = "91464d47-22a1-43fe-8b7f-2d57ee82463f"
+version = "0.1.7"
 
 [[deps.StackViews]]
 deps = ["OffsetArrays"]
@@ -3475,7 +3628,7 @@ version = "2023.1.0+0"
 [[deps.p7zip_jll]]
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "3f19e933-33d8-53b3-aaab-bd5110c3b7a0"
-version = "17.8.3+0"
+version = "17.8.5+0"
 
 [[deps.x264_jll]]
 deps = ["Artifacts", "JLLWrappers", "Libdl"]
@@ -3497,26 +3650,32 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 """
 
 # ╔═╡ Cell order:
-# ╟─91623e61-db88-4a1e-b7e6-25c23b3e1260
 # ╟─ae9a3c8c-e3d7-4f6a-af26-91efa98b9db6
 # ╟─3a691689-54cc-4bd9-a4e0-2159e8a2dd53
-# ╟─cbbb6280-4384-46d9-8e1f-1d7d3e5a26d1
 # ╟─2ce0dfa9-f800-4eb0-b809-49826e7eef76
 # ╠═27e48d3d-859a-48bc-8324-00e73496a7ff
+# ╟─53ee3e80-44ce-46d8-b680-f07e98b42055
 # ╠═4621f04d-a10d-4a6e-9428-789a580cae3d
+# ╟─7dcb171d-c8ef-4f57-aa51-51994eab1868
+# ╠═8f261ecd-4258-4224-9157-a8b965cccdfe
+# ╠═d759e126-1023-4519-8e91-62caf37c608f
+# ╟─69ecde40-72d9-4d04-b70d-91c3efb14ce7
+# ╠═bba74ad1-42f3-4f30-aa0a-36448f169dc0
+# ╟─497984f7-5009-477f-adbf-cf80e6ab72fd
+# ╟─0add26c5-b5ba-4282-93fc-da7d61de70d0
 # ╟─a80dc238-4349-40e8-a4a0-9a5e76aaf61a
 # ╠═80e5c2e7-6db2-4d80-bef1-c7632da09ed9
 # ╟─5c15ae8f-bcfb-4f5d-bf28-b376328b7f6e
 # ╟─b0e06ea4-3962-44c3-b250-1067d559454b
-# ╟─cb9899d1-0837-42b3-88fd-6090fb831e6f
-# ╟─4f5cf0d4-2ea8-4e62-841d-1b09111769be
-# ╟─829221ca-5325-4e0b-9d65-bce670004840
-# ╟─0d0ce3b4-b845-4f7f-bbb4-9a8ea9f296ed
 # ╟─05401c11-43ad-4c09-8a1e-7ea95d128c09
 # ╠═84c481fd-6ad9-417b-877a-befc212cd4ae
+# ╟─ab84cfbc-3718-4847-b220-c8869caaa98d
+# ╟─81097ca3-5023-4387-8a24-3af2c7c643fc
 # ╠═c4e14bdc-d063-4150-9a62-e48ecfb6787b
 # ╠═43f051bb-1dbe-4f3d-b11f-94cde9e01815
+# ╠═40f45db1-996f-4eb0-ab50-db6fa1c90fd0
 # ╠═7611f1fd-8680-423c-b52a-001b24d0601c
+# ╟─cbbb6280-4384-46d9-8e1f-1d7d3e5a26d1
 # ╠═076f663d-281c-4c97-9f1d-f63ce011337f
 # ╟─75ce0ac0-6a5c-4e8d-a1ea-84ef5598a2ef
 # ╠═b499be47-5368-4c3b-9e19-3c9a8d786ac0
@@ -3525,21 +3684,16 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╟─566e0aca-d2b0-4071-aaa1-061cd858c3bc
 # ╟─3494a6b6-d761-4b1b-a398-891bbec22c5a
 # ╟─00226ea4-663e-4034-878d-2401028768dc
-# ╟─d4db5136-89ef-4b01-8f65-2d92ce74adeb
 # ╟─1ae2ed62-a8e9-4ae6-a5b6-dcf9f537e273
-# ╠═3020f6fd-4c81-4063-873e-1231c4f7eadb
-# ╟─5430b003-fe8c-4e43-bce8-a9423705ef70
-# ╟─fc87feae-8962-40fd-873e-d5068e1b4287
+# ╠═5c675a7b-7396-4b32-8296-3db55ba1dc75
+# ╠═b30b3f25-170f-42fa-9803-3f4b4d4ba965
+# ╟─51d43b83-7abf-48c1-9f2f-029134078c8f
+# ╟─1bf163ef-ab3b-450f-9902-80c9ca82945e
+# ╟─3d02997c-1fb7-4b7f-ba10-396ff7f83bc3
 # ╟─511f6251-8445-4484-9d89-e94d102c8940
-# ╟─1889409d-d5d5-45cb-8386-1a525acd3e90
-# ╟─425e9917-fa9e-45df-a046-69dc8d64bb05
-# ╟─149f84fd-935e-4089-9c49-0a663368d586
-# ╟─6d340d8f-8160-42e7-b411-527a4f5e1a34
-# ╟─821af8d1-3528-482f-9bfb-5ae1b4d30e88
-# ╠═ff955f59-1d7a-40e4-8911-fec259969c2d
-# ╟─0c9e15a0-cdc8-43ef-a2d5-10f720707ce4
-# ╟─ddfa0a8c-34ca-4817-8986-3c4a698f8c4e
 # ╟─27a20176-a359-4a41-8385-5a098885489a
+# ╟─bb926df3-cfcd-4a75-a603-42628aa7cece
+# ╟─43c1aadb-311a-47f3-b4b8-bb4d7fc77c4f
 # ╟─f6d14578-452b-4f8f-add9-1f89ed8b22e9
 # ╟─59869cca-4917-4757-aa13-e62ff9330efd
 # ╟─61c05b91-c56d-4373-927e-4da6881ca2be
@@ -3550,8 +3704,11 @@ uuid = "23338594-aafe-5451-b93e-139f81909106"
 # ╠═cd2ec92c-6e1f-462a-b585-2598b3c42155
 # ╠═880d45fc-e31a-4367-8779-f612ce736fe8
 # ╠═c05b017e-4779-489a-962d-91926577e07f
+# ╠═da1dfe12-48ef-405e-9000-b661203a2a05
 # ╠═83b1054a-d95a-4bca-a219-c1eaed0ae83a
+# ╠═9d223bad-ca93-40b1-b021-d83064222dbe
 # ╠═16adfbd5-1653-496d-b6fc-ca10d8417b48
+# ╟─91623e61-db88-4a1e-b7e6-25c23b3e1260
 # ╟─28b9a1be-96ca-40f7-8bc2-4e9cf3994fe6
 # ╟─00000000-0000-0000-0000-000000000001
 # ╟─00000000-0000-0000-0000-000000000002
