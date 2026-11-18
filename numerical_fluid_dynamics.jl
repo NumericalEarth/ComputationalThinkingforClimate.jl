@@ -99,7 +99,7 @@ In the previous lesson, we approximated the energy equilibrium of the Earth due 
 
 # ╔═╡ 80e5c2e7-6db2-4d80-bef1-c7632da09ed9
 sunlight = let
-    S₀ = 1366 / 4          # average sunlight, from Monday [W m⁻²]
+    S₀ = 1366 / 4          # average sunlight [W m⁻²]
     α = 0.3                # albedo
     σ = 5.670374419e-8     # Stefan-Boltzmann constant [W m⁻² K⁻⁴]
     ε = 0.745              # emissivity of the atmosphere
