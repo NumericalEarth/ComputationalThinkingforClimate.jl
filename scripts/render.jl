@@ -1,7 +1,4 @@
-# Render notebooks to static HTML in assets/.
-#
-#     julia --project scripts/render.jl                  # all notebooks
-#     julia --project scripts/render.jl radiative_balance.jl
+# Render notebooks to static HTML in assets/. See README.md in this folder.
 
 using Pluto
 
