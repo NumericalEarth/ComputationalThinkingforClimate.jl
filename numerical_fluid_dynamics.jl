@@ -1237,7 +1237,7 @@ The flux form solution conserves ``u`` exactly while the advective form's does n
 
 # ╔═╡ 04084f63-5585-4603-9032-39baad3da8a7
 md"""
-The next notebook, `ocean_planet.jl`, runs a model of a global ocean with [Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl). Its script makes the same choices as this solver: a grid of cells, a flux at the faces, a time stepper and a time step.
+The next notebook, `oceananigans_near_global_demo.jl`, runs a model of a global ocean with [Oceananigans.jl](https://github.com/CliMA/Oceananigans.jl). Its script makes the same choices as this solver: a grid of cells, a flux at the faces, a time stepper and a time step.
 """
 
 # ╔═╡ e407ff9a-dd14-4e3b-b16c-84033c10ec80
